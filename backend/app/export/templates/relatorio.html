@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Relatório de auditoria — {{ audit.nome }}</title>
+<style>
+  @font-face { font-family: "IBM Plex Sans"; font-weight: 400; src: url("fonts/ibm-plex-sans-latin-400-normal.woff2"); }
+  @font-face { font-family: "IBM Plex Sans"; font-weight: 400; src: url("fonts/ibm-plex-sans-latin-ext-400-normal.woff2"); unicode-range: U+0100-024F; }
+  @font-face { font-family: "IBM Plex Sans"; font-weight: 600; src: url("fonts/ibm-plex-sans-latin-600-normal.woff2"); }
+  @font-face { font-family: "IBM Plex Sans"; font-weight: 600; src: url("fonts/ibm-plex-sans-latin-ext-600-normal.woff2"); unicode-range: U+0100-024F; }
+  @font-face { font-family: "IBM Plex Mono"; font-weight: 400; src: url("fonts/ibm-plex-mono-latin-400-normal.woff2"); }
+  @font-face { font-family: "IBM Plex Mono"; font-weight: 600; src: url("fonts/ibm-plex-mono-latin-600-normal.woff2"); }
+  @page {
+    size: A4; margin: 22mm 18mm 20mm 18mm;
+    @top-left { content: "Auditoria fiscal de cadastros · {{ empresa.razao_social }}"; font: 8pt "IBM Plex Sans"; color: #5B6472; }
+    @top-right { content: "CNPJ {{ cnpj }}"; font: 8pt "IBM Plex Mono"; color: #5B6472; }
+    @bottom-left { content: "Ferramenta de apoio à decisão. A responsabilidade técnica pela classificação é do profissional responsável."; font: 7pt "IBM Plex Sans"; color: #5B6472; }
+    @bottom-right { content: "Página " counter(page) " de " counter(pages); font: 8pt "IBM Plex Sans"; color: #5B6472; }
+  }
+  body { font-family: "IBM Plex Sans", sans-serif; font-size: 9.5pt; color: #16202E; line-height: 1.45; }
+  .mono, td.cod { font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+  h1 { font-size: 20pt; font-weight: 600; margin: 0 0 2mm; letter-spacing: -0.01em; }
+  h2 { font-size: 12pt; font-weight: 600; margin: 9mm 0 3mm; padding-bottom: 1.5mm; border-bottom: 1.2pt solid #16202E; }
+  .sub { color: #5B6472; margin-bottom: 7mm; }
+  .grade { display: flex; gap: 4mm; }
+  .caixa { flex: 1; border: 0.8pt solid #C9CED6; padding: 3mm 4mm; }
+  .caixa .n { font-size: 18pt; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .caixa .r { font-size: 8pt; color: #5B6472; }
+  .ok .n { color: #0F6E56; } .cor .n { color: #1E4E9C; } .ah .n { color: #9A4A00; }
+  table { width: 100%; border-collapse: collapse; margin-top: 2mm; }
+  th { text-align: left; font-size: 8pt; font-weight: 600; color: #5B6472; border-bottom: 0.8pt solid #16202E; padding: 1.5mm 2mm; }
+  td { border-bottom: 0.4pt solid #DDE1E6; padding: 1.5mm 2mm; vertical-align: top; font-size: 8.5pt; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .antes { color: #9A4A00; text-decoration: line-through; }
+  .depois { color: #0F6E56; font-weight: 600; }
+  p.nota { color: #5B6472; font-size: 8.5pt; }
+  ol li { margin-bottom: 1.5mm; }
+</style>
+</head>
+<body>
+  <h1>Relatório de auditoria de cadastro fiscal</h1>
+  <div class="sub">{{ audit.nome }} · {{ empresa.razao_social }} · Gerado em {{ gerado_em }} · Organização: {{ org }}</div>
+
+  <div class="grade">
+    <div class="caixa"><div class="n">{{ total|num }}</div><div class="r">itens auditados</div></div>
+    <div class="caixa ok"><div class="n">{{ status.get('confirmado', 0)|num }}</div><div class="r">Confirmados</div></div>
+    <div class="caixa cor"><div class="n">{{ status.get('corrigido', 0)|num }}</div><div class="r">Corrigidos</div></div>
+    <div class="caixa ah"><div class="n">{{ status.get('analise_humana', 0)|num }}</div><div class="r">Análise humana</div></div>
+  </div>
+  <div class="grade" style="margin-top:3mm">
+    <div class="caixa"><div class="n">{{ revisao.get('aprovado', 0)|num }}</div><div class="r">aprovados pelo revisor</div></div>
+    <div class="caixa"><div class="n">{{ revisao.get('rejeitado', 0)|num }}</div><div class="r">rejeitados</div></div>
+    <div class="caixa"><div class="n">{{ revisao.get('pendente', 0)|num }}</div><div class="r">sem decisão (não exportados)</div></div>
+    <div class="caixa"><div class="n">{{ total_alterados|num }}</div><div class="r">cadastros alterados</div></div>
+  </div>
+
+  <h2>Metodologia</h2>
+  <ol>
+    <li>Leitura da planilha e limpeza dos dados (normalização de NCM, recuperação sinalizada de zeros à esquerda, verificação de GTIN e duplicidades), sem uso de IA.</li>
+    <li>Validação estrutural de cada código contra a tabela oficial vigente na data de referência ({{ audit.data_referencia.strftime('%d/%m/%Y') }}).</li>
+    <li>Reutilização de classificações previamente aprovadas por profissional (memória aprovada da empresa).</li>
+    <li>Busca híbrida (semântica e textual) dos códigos oficiais mais prováveis para a descrição.</li>
+    <li>Julgamento da coerência entre descrição e código por modelo de linguagem, restrito à lista de candidatos oficiais; segundo parecer independente em casos de baixa confiança ou divergência.</li>
+    <li>Enquadramento na LC 214/2025 por motor de regras declarativas aprovadas, com verificação de exceções e condições legais.</li>
+    <li>Decisão de status com confiança calibrada; dúvidas encaminhadas à análise humana. Somente itens aprovados pelo revisor constam da exportação final.</li>
+  </ol>
+  <p class="nota">Modelos: {{ configuracao.get('modelo_principal', '—') }} (julgamento) e {{ configuracao.get('modelo_escalonamento', '—') }} (escalonamento). Limites de confiança: Confirmado ≥ {{ configuracao.get('limiar_confirmado', '—') }}, Corrigido ≥ {{ configuracao.get('limiar_corrigido', '—') }}. Custo de IA registrado: US$ {{ '%.2f'|format(custo) }} ({{ tokens.get('chamadas', 0)|num }} chamadas).</p>
+
+  <h2>Base legal e tabelas oficiais utilizadas</h2>
+  <table>
+    <tr><th>Fonte</th><th>Versão</th><th>Coletada em</th><th>Hash (SHA-256)</th><th>Origem</th></tr>
+    {% for v in versoes %}
+    <tr><td>{{ v.fonte }}</td><td>{{ v.rotulo }}</td><td class="mono">{{ v.coletado_em }}</td><td class="mono">{{ v.sha }}</td><td style="word-break:break-all">{{ v.url }}</td></tr>
+    {% endfor %}
+  </table>
+  <p class="nota">{{ regras_aprovadas|num }} regras declarativas aprovadas estavam em vigor no início da auditoria.</p>
+
+  {% if motivos %}
+  <h2>Principais motivos de análise</h2>
+  <table>
+    <tr><th>Motivo</th><th style="text-align:right">Itens</th></tr>
+    {% for m, n in motivos %}<tr><td>{{ m }}</td><td class="num">{{ n|num }}</td></tr>{% endfor %}
+  </table>
+  {% endif %}
+
+  <h2>Itens alterados</h2>
+  {% if alterados %}
+  <table>
+    <tr><th>Linha</th><th>Código</th><th>Descrição</th><th>Antes</th><th>Depois</th><th>cClassTrib</th><th>Dispositivo</th></tr>
+    {% for a in alterados %}
+    <tr>
+      <td class="num">{{ a.linha }}</td><td class="cod">{{ a.codigo_interno }}</td><td>{{ a.descricao }}</td>
+      <td class="cod antes">{{ a.antes }}</td><td class="cod depois">{{ a.depois }}</td>
+      <td class="cod">{{ a.cclasstrib }}</td><td>{{ a.dispositivo }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% if total_alterados > alterados|length %}<p class="nota">Exibidos {{ alterados|length }} de {{ total_alterados }} itens alterados; a lista completa está na exportação em planilha.</p>{% endif %}
+  {% else %}
+  <p class="nota">Nenhum item aprovado teve o cadastro alterado.</p>
+  {% endif %}
+
+  <h2>Trilha de aprovação</h2>
+  <table>
+    <tr><th>Revisor</th><th>Ação</th><th style="text-align:right">Itens</th></tr>
+    {% for t in trilha %}<tr><td>{{ t.revisor }}</td><td>{{ t.acao }}</td><td class="num">{{ t.n|num }}</td></tr>{% endfor %}
+  </table>
+  <p class="nota">Cada decisão individual (antes, depois, responsável e horário) está registrada de forma imutável no sistema e pode ser consultada no histórico de cada item.</p>
+</body>
+</html>

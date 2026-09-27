@@ -1,0 +1,341 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useParams } from "@tanstack/react-router";
+import { ArrowLeft, Download, Keyboard, Loader2, PauseCircle, Play, Radio } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
+import { api, ok, tokenValido } from "@/api/client";
+import { useAuth } from "@/auth/auth";
+import { Cabecalho, EstadoErro, mensagemErro, STATUS } from "@/components/dominio";
+import { Aviso, Button, Painel, Progresso, Skeleton } from "@/components/ui/primitives";
+import { assinarSSE } from "@/lib/sse";
+import { fmtData, fmtNum, fmtUSD } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import { ETAPAS, ROTULO_STATUS_AUDITORIA, useAuditoria, type Auditoria } from "./comum";
+import { Passos } from "./NovaAuditoriaPage";
+import { Resultado } from "./Resultado";
+
+export function AuditoriaPage() {
+  const { id } = useParams({ strict: false }) as { id: string };
+  const qc = useQueryClient();
+  const a = useAuditoria(id, (q) => (q.state.data?.status === "preparando" ? 2000 : false));
+  const status = a.data?.status;
+  const aoVivo = status === "processando" || status === "aguardando_lote";
+
+  // Progresso em tempo real (SSE). Atualiza os contadores e, periodicamente, a lista de itens.
+  useEffect(() => {
+    if (!aoVivo && status !== "preparando") return;
+    let ultimoRefetch = 0;
+    return assinarSSE(`/api/auditorias/${id}/eventos`, tokenValido, (ev) => {
+      if (ev.event === "ping") return;
+      try {
+        const dados = JSON.parse(ev.data);
+        if (ev.event === "progresso") {
+          qc.setQueryData(["auditoria", id], (antigo: Auditoria | undefined) =>
+            antigo ? { ...antigo, contadores: dados.contadores, custo_usd: dados.custo_usd } : antigo,
+          );
+        }
+        if (ev.event === "status") void qc.invalidateQueries({ queryKey: ["auditoria", id] });
+        const agora = Date.now();
+        if ((ev.event === "item" || ev.event === "status") && agora - ultimoRefetch > 5000) {
+          ultimoRefetch = agora;
+          void qc.invalidateQueries({ queryKey: ["itens", id] });
+        }
+      } catch {
+        /* evento malformado: ignora */
+      }
+    });
+  }, [id, aoVivo, status, qc]);
+
+  if (a.isError) return <EstadoErro erro={a.error} aoTentar={() => void a.refetch()} />;
+  if (!a.data) return <Skeleton className="h-96" />;
+  const d = a.data;
+
+  const voltar = (
+    <Link to="/auditorias" className="inline-flex items-center gap-1 text-xs text-tinta-3 hover:text-tinta">
+      <ArrowLeft className="size-3.5" /> Auditorias
+    </Link>
+  );
+  const subtitulo = (
+    <span>
+      {d.empresa} · referência legal {fmtData(d.data_referencia)} · {ROTULO_STATUS_AUDITORIA[d.status] ?? d.status}
+    </span>
+  );
+
+  if (d.status === "preparando") {
+    return (
+      <>
+        <Cabecalho voltar={voltar} titulo={d.nome} subtitulo={subtitulo} />
+        <Passos atual={2} />
+        <Painel className="flex items-center gap-3 p-6">
+          <Loader2 className="size-5 animate-spin text-tinta-3" aria-hidden />
+          <p>Lendo a planilha, limpando os dados e conferindo os códigos na tabela oficial. Nenhuma IA é usada nesta etapa.</p>
+        </Painel>
+      </>
+    );
+  }
+  if (["pronta", "pausada_orcamento", "falhou", "rascunho"].includes(d.status) && !(d.contadores as { concluidos?: number })?.concluidos) {
+    return (
+      <>
+        <Cabecalho voltar={voltar} titulo={d.nome} subtitulo={subtitulo} />
+        <Passos atual={3} />
+        <PreviaInicio auditoria={d} />
+      </>
+    );
+  }
+  return (
+    <>
+      <Cabecalho
+        voltar={voltar}
+        titulo={d.nome}
+        subtitulo={subtitulo}
+        acoes={
+          <>
+            {d.status === "pausada_orcamento" ? <Retomar auditoria={d} /> : null}
+            <Button asChild variant="secundario">
+              <Link to="/auditorias/$id/revisar" params={{ id }}>
+                <Keyboard /> Fila de revisão
+              </Link>
+            </Button>
+            <Button asChild variant="secundario">
+              <Link to="/auditorias/$id/exportar" params={{ id }}>
+                <Download /> Exportar
+              </Link>
+            </Button>
+          </>
+        }
+      />
+      {aoVivo ? <Acompanhamento auditoria={d} /> : null}
+      {d.status === "pausada_orcamento" ? (
+        <Aviso tom="atencao" titulo="Auditoria pausada: orçamento mensal de IA atingido" className="mb-4">
+          {d.erro} Os itens já analisados continuam disponíveis para revisão.
+        </Aviso>
+      ) : null}
+      <Resultado auditoria={d} />
+    </>
+  );
+}
+
+function Retomar({ auditoria }: { auditoria: Auditoria }) {
+  const qc = useQueryClient();
+  const m = useMutation({
+    mutationFn: () => ok(api.POST("/api/auditorias/{audit_id}/iniciar", { params: { path: { audit_id: auditoria.id } }, body: { modo: auditoria.modo, confirmar_custo_usd: 0 } })),
+    onSuccess: () => {
+      toast.success("Auditoria retomada");
+      void qc.invalidateQueries({ queryKey: ["auditoria", auditoria.id] });
+    },
+    onError: (e) => toast.error(mensagemErro(e)),
+  });
+  return (
+    <Button variant="primario" onClick={() => m.mutate()} disabled={m.isPending}>
+      <Play /> Retomar
+    </Button>
+  );
+}
+
+// ------------------------------------------------------------------ prévia e estimativa --
+function PreviaInicio({ auditoria }: { auditoria: Auditoria }) {
+  const { pode } = useAuth();
+  const qc = useQueryClient();
+  const [filtro, setFiltro] = useState<string | undefined>();
+  const prob = auditoria.problemas_resumo as {
+    total_linhas?: number;
+    itens_validos?: number;
+    ignorados?: number;
+    com_problemas?: number;
+    por_problema?: Record<string, number>;
+    descricoes?: Record<string, string>;
+    provaveis_da_memoria?: number;
+    base_referencia?: { ncm: boolean; nbs: boolean };
+  };
+  const est = auditoria.estimativa as Record<string, Record<string, unknown>> & { modo_recomendado?: string };
+  const [modo, setModo] = useState<string>(est.modo_recomendado ?? "tempo_real");
+  const linhas = useQuery({
+    queryKey: ["previa", auditoria.id, filtro],
+    queryFn: () => ok(api.GET("/api/auditorias/{audit_id}/previa", { params: { path: { audit_id: auditoria.id }, query: { problema: filtro, limite: 200 } } })),
+  });
+  const escolhida = est[modo] ?? {};
+  const iniciar = useMutation({
+    mutationFn: () =>
+      ok(
+        api.POST("/api/auditorias/{audit_id}/iniciar", {
+          params: { path: { audit_id: auditoria.id } },
+          body: { modo, confirmar_custo_usd: Number(escolhida.custo_usd_estimado ?? 0) },
+        }),
+      ),
+    onSuccess: () => {
+      toast.success("Auditoria iniciada");
+      void qc.invalidateQueries({ queryKey: ["auditoria", auditoria.id] });
+    },
+    onError: (e) => toast.error(mensagemErro(e)),
+  });
+
+  const orc = auditoria.orcamento as { limite_usd?: number | null; gasto_mes_usd?: number };
+  return (
+    <div className="grid gap-6 xl:grid-cols-[1fr_24rem]">
+      <div className="grid min-w-0 gap-6">
+        {auditoria.status === "falhou" ? <Aviso tom="erro" titulo="Não foi possível processar">{auditoria.erro}</Aviso> : null}
+        {prob.base_referencia && (!prob.base_referencia.ncm || !prob.base_referencia.nbs) ? (
+          <Aviso tom="atencao" titulo="Base de referência incompleta">
+            {!prob.base_referencia.ncm ? "A tabela NCM oficial ainda não foi importada. " : ""}
+            {!prob.base_referencia.nbs ? "A tabela NBS oficial ainda não foi importada. " : ""}
+            Os itens que dependem dela irão para análise humana.
+          </Aviso>
+        ) : null}
+        <div className="grid gap-3 sm:grid-cols-4">
+          <Mini rotulo="Linhas lidas" valor={fmtNum(prob.total_linhas ?? 0)} />
+          <Mini rotulo="Itens válidos" valor={fmtNum(prob.itens_validos ?? 0)} />
+          <Mini rotulo="Com algum problema" valor={fmtNum(prob.com_problemas ?? 0)} tom="ocre" />
+          <Mini rotulo="Já na memória aprovada" valor={fmtNum(prob.provaveis_da_memoria ?? 0)} tom="conferido" />
+        </div>
+        <Painel>
+          <div className="flex flex-wrap items-center gap-2 border-b border-regua px-5 py-3">
+            <h2 className="mr-2 text-base">Problemas nos dados</h2>
+            <button className={cn("rounded-full border px-2.5 py-0.5 text-2xs", !filtro ? "border-tinta bg-tinta text-papel" : "border-regua")} onClick={() => setFiltro(undefined)}>
+              Todos
+            </button>
+            {Object.entries(prob.por_problema ?? {}).map(([k, n]) => (
+              <button
+                key={k}
+                onClick={() => setFiltro(k)}
+                className={cn("rounded-full border px-2.5 py-0.5 text-2xs", filtro === k ? "border-tinta bg-tinta text-papel" : "border-regua hover:border-regua-forte")}
+                title={prob.descricoes?.[k]}
+              >
+                {prob.descricoes?.[k]?.split(";")[0]?.split(".")[0] ?? k} · <span className="num">{fmtNum(n)}</span>
+              </button>
+            ))}
+          </div>
+          <div className="max-h-[28rem] overflow-y-auto">
+            {(linhas.data ?? []).length === 0 ? (
+              <p className="px-5 py-8 text-center text-sm text-tinta-3">Nenhum problema de dados encontrado.</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-superficie">
+                  <tr className="border-b border-regua text-left text-2xs text-tinta-3">
+                    <th className="px-5 py-2 font-medium">Linha</th>
+                    <th className="px-3 py-2 font-medium">Descrição</th>
+                    <th className="px-3 py-2 font-medium">NCM/NBS informado</th>
+                    <th className="px-5 py-2 font-medium">Problemas</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {linhas.data!.map((l) => (
+                    <tr key={l.linha} className="border-b border-regua align-top last:border-0">
+                      <td className="num px-5 py-2 text-tinta-3">{l.linha}</td>
+                      <td className="px-3 py-2">{l.descricao || <span className="text-tinta-3">(vazia)</span>}</td>
+                      <td className="codigo px-3 py-2 text-xs">{l.ncm_informado ?? l.nbs_informado ?? "—"}</td>
+                      <td className="px-5 py-2 text-xs text-tinta-2">
+                        {l.problemas.map((p) => (
+                          <p key={p.codigo}>{p.mensagem}</p>
+                        ))}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </Painel>
+      </div>
+
+      <Painel className="h-fit p-5">
+        <h2 className="text-base">Estimativa de custo e tempo</h2>
+        <p className="mt-1 text-xs text-tinta-3">{String(escolhida.observacao ?? "")}</p>
+        <div className="mt-4 grid grid-cols-2 gap-2" role="radiogroup" aria-label="Modo de processamento">
+          {(["tempo_real", "lote"] as const).map((m) => (
+            <button
+              key={m}
+              role="radio"
+              aria-checked={modo === m}
+              onClick={() => setModo(m)}
+              className={cn("rounded-md border px-3 py-2 text-left text-sm", modo === m ? "border-tinta bg-superficie-2" : "border-regua hover:border-regua-forte")}
+            >
+              <span className="font-medium">{m === "lote" ? "Em lote" : "Tempo real"}</span>
+              <span className="block text-2xs text-tinta-3">{m === "lote" ? "50% mais barato, até 24 h" : "Mais rápido"}</span>
+            </button>
+          ))}
+        </div>
+        <dl className="mt-4 grid gap-2 text-sm">
+          <Linha rotulo="Itens analisados por IA" valor={fmtNum(Number(escolhida.itens_com_ia ?? 0))} />
+          <Linha rotulo="Segundos pareceres (estimados)" valor={fmtNum(Number(escolhida.escalonamentos_estimados ?? 0))} />
+          <Linha rotulo="Tokens de entrada / saída" valor={`${fmtNum(Number(escolhida.tokens_entrada_estimados ?? 0))} / ${fmtNum(Number(escolhida.tokens_saida_estimados ?? 0))}`} />
+          <Linha rotulo="Tempo" valor={String(escolhida.tempo_texto ?? "")} />
+          <div className="mt-2 border-t border-regua pt-3">
+            <dt className="text-xs text-tinta-3">Custo estimado</dt>
+            <dd className="num text-2xl font-semibold">{fmtUSD(Number(escolhida.custo_usd_estimado ?? 0))}</dd>
+            <dd className="text-2xs text-tinta-3">
+              faixa provável {fmtUSD((escolhida.custo_usd_faixa as number[] | undefined)?.[0])} a {fmtUSD((escolhida.custo_usd_faixa as number[] | undefined)?.[1])}
+            </dd>
+          </div>
+          {orc.limite_usd != null ? (
+            <p className="text-2xs text-tinta-3">
+              Gasto do mês: {fmtUSD(orc.gasto_mes_usd)} de {fmtUSD(orc.limite_usd)}.
+            </p>
+          ) : null}
+        </dl>
+        {pode("criar_auditoria") ? (
+          <Button variant="primario" className="mt-5 w-full" disabled={iniciar.isPending || !prob.itens_validos} onClick={() => iniciar.mutate()}>
+            <Play /> {iniciar.isPending ? "Iniciando…" : `Confirmar ${fmtUSD(Number(escolhida.custo_usd_estimado ?? 0))} e iniciar`}
+          </Button>
+        ) : (
+          <p className="mt-4 text-xs text-tinta-3">Seu papel não permite iniciar auditorias.</p>
+        )}
+      </Painel>
+    </div>
+  );
+}
+
+function Mini({ rotulo, valor, tom }: { rotulo: string; valor: string; tom?: "ocre" | "conferido" }) {
+  return (
+    <Painel className="px-4 py-3">
+      <p className="text-2xs text-tinta-3">{rotulo}</p>
+      <p className={cn("num mt-0.5 text-xl font-semibold", tom === "ocre" && "text-ocre", tom === "conferido" && "text-conferido")}>{valor}</p>
+    </Painel>
+  );
+}
+
+function Linha({ rotulo, valor }: { rotulo: string; valor: string }) {
+  return (
+    <div className="flex justify-between gap-4">
+      <dt className="text-tinta-3">{rotulo}</dt>
+      <dd className="num text-right">{valor}</dd>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------------ acompanhamento --
+function Acompanhamento({ auditoria }: { auditoria: Auditoria }) {
+  const c = auditoria.contadores as { por_status?: Record<string, number>; por_etapa?: Record<string, number>; concluidos?: number; total?: number };
+  const total = c.total || auditoria.total_itens || 0;
+  const concl = c.concluidos ?? 0;
+  const etapas = useMemo(() => Object.entries(c.por_etapa ?? {}).sort((a, b) => b[1] - a[1]), [c.por_etapa]);
+  return (
+    <Painel className="mb-6 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="flex items-center gap-2 text-sm font-medium">
+          {auditoria.status === "aguardando_lote" ? <PauseCircle className="size-4 text-tinta-3" /> : <Radio className="size-4 animate-pulse text-conferido" />}
+          {auditoria.status === "aguardando_lote" ? "Aguardando o lote da IA (você pode fechar esta tela e voltar depois)" : "Processando ao vivo"}
+        </p>
+        <p className="num text-sm text-tinta-2">
+          {fmtNum(concl)} de {fmtNum(total)} · custo até agora {fmtUSD(auditoria.custo_usd)}
+        </p>
+      </div>
+      <Progresso className="mt-3" valor={total ? (concl / total) * 100 : 0} rotulo="Progresso da auditoria" />
+      <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-xs">
+        {(["confirmado", "corrigido", "analise_humana", "erro"] as const).map((s) => (
+          <span key={s} className={cn("flex items-center gap-1.5", STATUS[s].cor)}>
+            {(() => {
+              const I = STATUS[s].icone;
+              return <I className="size-3.5" aria-hidden />;
+            })()}
+            {STATUS[s].rotulo} <span className="num font-medium">{fmtNum(c.por_status?.[s] ?? 0)}</span>
+          </span>
+        ))}
+        {etapas.map(([e, n]) => (
+          <span key={e} className="text-tinta-3">
+            {ETAPAS[e] ?? e}: <span className="num">{fmtNum(n)}</span>
+          </span>
+        ))}
+      </div>
+    </Painel>
+  );
+}

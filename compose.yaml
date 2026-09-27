@@ -1,0 +1,136 @@
+# Ambiente de desenvolvimento completo: `docker compose up`
+# Produção: `docker compose -f compose.yaml -f compose.prod.yaml up -d` (ver docs/operacao.md)
+name: reforma
+
+x-backend: &backend
+  build:
+    context: ./backend
+    target: dev
+  image: reforma-backend:dev
+  env_file: .env
+  environment:
+    STORAGE_DIR: /data/storage
+  volumes:
+    - ./backend:/app
+    - ./data/samples:/data/samples:ro
+    - ./data/reference/raw:/data/reference/raw:ro
+    - ./evals:/evals
+    - storage:/data/storage
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  db:
+    image: pgvector/pgvector:0.8.6-pg17-bookworm
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-reforma_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+      POSTGRES_DB: ${POSTGRES_DB:-reforma}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?defina APP_DB_PASSWORD no .env}
+      REF_DB_PASSWORD: ${REF_DB_PASSWORD:?defina REF_DB_PASSWORD no .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${DB_HOST_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.8.3-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  embeddings:
+    # Hugging Face Text Embeddings Inference (CPU) servindo BAAI/bge-m3 localmente.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4
+    command: ["--model-id", "${EMBEDDINGS_MODEL:-intfloat/multilingual-e5-base}", "--max-client-batch-size", "64", "--auto-truncate",
+              "--tokenization-workers", "2", "--max-batch-tokens", "8192", "--max-concurrent-requests", "32"]
+    mem_limit: ${EMBEDDINGS_MEM_LIMIT:-3g}
+    volumes:
+      - embeddings_cache:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:80/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+    restart: unless-stopped
+
+  api:
+    <<: *backend
+    command: >
+      sh -c "python -m app.cli migrate &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app"
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8100}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/saude || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  worker:
+    <<: *backend
+    command: >
+      watchfiles --filter python
+      "celery -A app.worker.celery_app worker -l INFO -Q default,ingest,reference,pipeline,llm,export -c 4"
+      app
+    depends_on:
+      api:
+        condition: service_healthy
+
+  beat:
+    <<: *backend
+    command: celery -A app.worker.celery_app beat -l INFO -s /tmp/celerybeat-schedule
+    depends_on:
+      api:
+        condition: service_healthy
+
+  flower:
+    <<: *backend
+    command: celery -A app.worker.celery_app flower --port=5555 --url_prefix=flower
+    ports:
+      - "127.0.0.1:${FLOWER_HOST_PORT:-5556}:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    image: reforma-frontend:dev
+    environment:
+      VITE_API_PROXY: http://api:8000
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "127.0.0.1:${FRONTEND_HOST_PORT:-5180}:5173"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  storage:
+  embeddings_cache:
+  frontend_node_modules:

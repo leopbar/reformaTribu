@@ -1,0 +1,76 @@
+# Perfil de produção: docker compose -f compose.yaml -f compose.prod.yaml up -d
+# Imagens multi-stage enxutas, usuário não-root, sem montagem de código, sem portas internas expostas.
+services:
+  db:
+    ports: !reset []
+    restart: always
+    shm_size: 256mb
+
+  redis:
+    restart: always
+
+  embeddings:
+    restart: always
+
+  api:
+    build: { context: ./backend, target: prod }
+    image: reforma-backend:prod
+    volumes: !override
+      - storage:/data/storage
+      - ./evals:/evals
+    command: >
+      sh -c "python -m app.cli migrate &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4 --proxy-headers --forwarded-allow-ips '*'"
+    ports: !reset []
+    environment:
+      APP_ENV: producao
+      COOKIE_SECURE: "true"
+    restart: always
+
+  worker:
+    build: { context: ./backend, target: prod }
+    image: reforma-backend:prod
+    volumes: !override
+      - storage:/data/storage
+    command: celery -A app.worker.celery_app worker -l INFO -Q default,ingest,reference,pipeline,llm,export -c 4 --max-tasks-per-child 200
+    environment:
+      APP_ENV: producao
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.worker.celery_app inspect ping -d celery@$$HOSTNAME --timeout 10 || exit 1"]
+      interval: 60s
+      timeout: 20s
+      retries: 3
+    restart: always
+
+  beat:
+    build: { context: ./backend, target: prod }
+    image: reforma-backend:prod
+    volumes: !override
+      - storage:/data/storage
+    command: celery -A app.worker.celery_app beat -l INFO -s /data/storage/celerybeat-schedule
+    environment:
+      APP_ENV: producao
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /data/storage/celerybeat-schedule || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    restart: always
+
+  flower:
+    image: reforma-backend:prod
+    volumes: !override []
+    profiles: ["monitoramento"]
+    environment:
+      FLOWER_BASIC_AUTH: ${FLOWER_BASIC_AUTH:-}  # defina usuario:senha no .env de produção
+    ports: !override
+      - "127.0.0.1:${FLOWER_HOST_PORT:-5556}:5555"
+
+  frontend:
+    build: { context: ./frontend, target: prod }
+    image: reforma-frontend:prod
+    volumes: !reset []
+    environment: !reset {}
+    ports: !override
+      - "${HTTP_PORT:-8080}:8080"
+    restart: always

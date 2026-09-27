@@ -1,0 +1,14 @@
+# EXEMPLO ILUSTRATIVO, NÃO VALIDADO. Serve apenas para testar o harness de avaliação.
+# As respostas "esperadas" abaixo NÃO foram conferidas por um contador e NÃO podem ser tratadas como verdade.
+# Formato: ver evals/README.md. Separador ";" e codificação UTF-8. Linhas iniciadas por "#" são ignoradas.
+id;descricao;ncm_informado;nbs_informado;tipo;esperado_tipo_codigo;esperado_codigo;esperado_cst;esperado_cclasstrib;esperado_status;validado_por;observacao
+EX01;SAB BARRA ERVA DOCE 90G;34011190;;produto;ncm;34011190;;;confirmado;;sabonete em barra
+EX02;SAB LIQ ERVA DOCE 250ML;34011190;;produto;ncm;34013000;;;corrigido;;líquido com NCM de barra
+EX03;LEITE UHT INTEGRAL 1L;4012010;;produto;ncm;04012010;;;corrigido;;zero à esquerda perdido
+EX04;SUCO UVA 1L;20096100;;produto;ncm;20096100;;;analise_humana;;não informa adição de açúcar
+EX05;ARROZ TIPO 1 5KG;10063021;;produto;ncm;10063021;;;confirmado;;
+EX06;CR DENT 90G;33061000;;produto;ncm;33061000;;;confirmado;;
+EX07;REFRIG COLA 2L;22021000;;produto;ncm;22021000;;;analise_humana;;sujeito ao Imposto Seletivo
+EX08;BISC RECH CHOC 130G;19021900;;produto;ncm;19053100;;;corrigido;;NCM de massa para biscoito
+EX09;PROD DIVERSOS;;;produto;ncm;;;;analise_humana;;descrição insuficiente
+EX10;Assessoria contábil mensal;;1.1302.21.00;servico;nbs;113022100;;;confirmado;;

@@ -1,0 +1,13 @@
+# Variante para comparação: Sonnet 5 com esforço alto no julgamento principal.
+nome: sonnet5-high-opus55-v1
+modelo_principal: claude-sonnet-5
+modelo_escalonamento: claude-opus-5-5
+esforco_principal: high
+esforco_escalonamento: high
+prompts:
+  julgar_coerencia: v1
+  escalar: v1
+limiar_confirmado: 0.90
+limiar_corrigido: 0.85
+limiar_escalonamento: 0.80
+imposto_seletivo_exige_analise: true

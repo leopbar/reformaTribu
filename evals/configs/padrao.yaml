@@ -1,0 +1,13 @@
+# Configuração inicial (ver seção 8.1 do documento do projeto).
+nome: sonnet5-opus55-v1
+modelo_principal: claude-sonnet-5
+modelo_escalonamento: claude-opus-5-5
+esforco_principal: medium
+esforco_escalonamento: high
+prompts:
+  julgar_coerencia: v1
+  escalar: v1
+limiar_confirmado: 0.90
+limiar_corrigido: 0.85
+limiar_escalonamento: 0.80
+imposto_seletivo_exige_analise: true

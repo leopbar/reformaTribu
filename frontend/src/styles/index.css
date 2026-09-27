@@ -1,0 +1,157 @@
+@import "tailwindcss";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+  Sistema de design "Conferência" — ver docs/design-system.md
+  Papel (fundo), Tinta (texto), Régua (linhas), Caneta (correção), Conferido (ok), Ocre (atenção).
+*/
+:root {
+  --papel: #f4f5f2;
+  --superficie: #ffffff;
+  --superficie-2: #eceee9;
+  --superficie-3: #e2e5df;
+  --tinta: #17202e;
+  --tinta-2: #3d4757;
+  --tinta-3: #5d6776;
+  --regua: #d6dad3;
+  --regua-forte: #b3b9b0;
+  --caneta: #2343b5;
+  --caneta-suave: #e5eaf9;
+  --conferido: #0c6f5c;
+  --conferido-suave: #dff1ec;
+  --ocre: #a44d06;
+  --ocre-suave: #fbeadb;
+  --perigo: #b42318;
+  --perigo-suave: #fbe4e1;
+  --foco: #2343b5;
+  --sombra: 0 1px 0 rgb(23 32 46 / 0.04), 0 8px 24px -12px rgb(23 32 46 / 0.18);
+}
+
+.dark {
+  --papel: #0e1319;
+  --superficie: #151c25;
+  --superficie-2: #1b2430;
+  --superficie-3: #232e3c;
+  --tinta: #e8ebef;
+  --tinta-2: #c1c8d2;
+  --tinta-3: #8f99a8;
+  --regua: #2a3441;
+  --regua-forte: #3c4858;
+  --caneta: #8aa4ff;
+  --caneta-suave: #1d2745;
+  --conferido: #4fc9a8;
+  --conferido-suave: #13322b;
+  --ocre: #f0a45b;
+  --ocre-suave: #3a2716;
+  --perigo: #ff8a80;
+  --perigo-suave: #3d1d1b;
+  --foco: #8aa4ff;
+  --sombra: 0 1px 0 rgb(0 0 0 / 0.3), 0 12px 32px -12px rgb(0 0 0 / 0.6);
+}
+
+@theme inline {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", monospace;
+
+  --color-papel: var(--papel);
+  --color-superficie: var(--superficie);
+  --color-superficie-2: var(--superficie-2);
+  --color-superficie-3: var(--superficie-3);
+  --color-tinta: var(--tinta);
+  --color-tinta-2: var(--tinta-2);
+  --color-tinta-3: var(--tinta-3);
+  --color-regua: var(--regua);
+  --color-regua-forte: var(--regua-forte);
+  --color-caneta: var(--caneta);
+  --color-caneta-suave: var(--caneta-suave);
+  --color-conferido: var(--conferido);
+  --color-conferido-suave: var(--conferido-suave);
+  --color-ocre: var(--ocre);
+  --color-ocre-suave: var(--ocre-suave);
+  --color-perigo: var(--perigo);
+  --color-perigo-suave: var(--perigo-suave);
+  --color-foco: var(--foco);
+
+  /* Escala tipográfica (razão ~1,2): 12 · 13 · 14 · 16 · 19 · 23 · 28 */
+  --text-2xs: 0.75rem;
+  --text-xs: 0.8125rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.1875rem;
+  --text-xl: 1.4375rem;
+  --text-2xl: 1.75rem;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --shadow-painel: var(--sombra);
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    background: var(--papel);
+    color: var(--tinta);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    min-height: 100dvh;
+    font-size: var(--text-sm);
+    line-height: 1.5;
+  }
+  ::selection {
+    background: var(--caneta-suave);
+    color: var(--tinta);
+  }
+  :focus-visible {
+    outline: 2px solid var(--foco);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+  h1, h2, h3 {
+    letter-spacing: -0.01em;
+    font-weight: 600;
+  }
+}
+
+@layer utilities {
+  .num {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1, "zero" 1;
+  }
+  .codigo {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.01em;
+  }
+  /* Traço de caneta: marca de revisão usada na comparação atual × sugerido */
+  .traco-caneta {
+    background-image: linear-gradient(transparent 62%, color-mix(in oklab, var(--caneta) 22%, transparent) 62%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@keyframes fade { from { opacity: 0 } to { opacity: 1 } }
+@keyframes entra-lateral { from { transform: translateX(24px); opacity: 0 } to { transform: none; opacity: 1 } }
+/* Carimbo: resposta ao usuário ao aprovar (única animação "expressiva" do produto). */
+@keyframes carimbo {
+  0% { transform: scale(1.35) rotate(-8deg); opacity: 0 }
+  60% { transform: scale(0.96) rotate(-3deg); opacity: 1 }
+  100% { transform: scale(1) rotate(-3deg); opacity: 1 }
+}
+.animar-carimbo { animation: carimbo .28s cubic-bezier(.2,.9,.3,1.2) both; }
