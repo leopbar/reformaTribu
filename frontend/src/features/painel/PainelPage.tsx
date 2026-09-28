@@ -35,7 +35,7 @@ export function PainelPage() {
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Numero rotulo="Empresas" valor={fmtNum(q.data.totais.empresas as number)} />
             <Numero rotulo="Itens para revisar" valor={fmtNum(q.data.totais.pendentes_revisao as number)} destaque />
-            <Numero rotulo="Em análise humana" valor={fmtNum(q.data.totais.analise_humana as number)} />
+            <Numero rotulo="Aguardando informação" valor={fmtNum(q.data.totais.aguardando_informacao as number)} />
             {q.data.totais.gasto_mes_usd != null ? (
               <Numero
                 rotulo="IA no mês"
@@ -94,7 +94,7 @@ export function PainelPage() {
                       <th className="px-5 py-2 font-medium">Empresa</th>
                       <th className="px-3 py-2 font-medium">Última auditoria</th>
                       <th className="px-3 py-2 text-right font-medium">Para revisar</th>
-                      <th className="px-3 py-2 text-right font-medium">Análise humana</th>
+                      <th className="px-3 py-2 text-right font-medium">Aguardando informação</th>
                       <th className="px-5 py-2" />
                     </tr>
                   </thead>
@@ -119,7 +119,7 @@ export function PainelPage() {
                         </td>
                         <td className="num px-3 py-3 text-right">{e.pendentes_revisao ? fmtNum(e.pendentes_revisao) : <span className="text-tinta-3">—</span>}</td>
                         <td className="num px-3 py-3 text-right">
-                          {e.analise_humana_pendente ? <span className="font-medium text-ocre">{fmtNum(e.analise_humana_pendente)}</span> : <span className="text-tinta-3">—</span>}
+                          {e.aguardando_informacao ? <span className="font-medium text-ocre">{fmtNum(e.aguardando_informacao)}</span> : <span className="text-tinta-3">—</span>}
                         </td>
                         <td className="px-5 py-3 text-right">
                           {e.ultima_auditoria_id ? (

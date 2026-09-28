@@ -287,6 +287,7 @@ def importar_lc214(
     por_anexo: dict[str, int] = {}
     for it in itens:
         por_anexo[it.anexo] = por_anexo.get(it.anexo, 0) + 1
+    versao.embeddings_status = "pendente"  # busca por significado na base normativa
     ativar_versao(
         session,
         versao,

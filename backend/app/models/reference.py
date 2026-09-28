@@ -163,7 +163,10 @@ class LegalProvision(Base):
     """Trecho do texto legal (dispositivo) extraído da publicação oficial."""
 
     __tablename__ = "legal_provisions"
-    __table_args__ = (Index("ix_legal_provisions_anexo_item", "version_id", "anexo", "item"),)
+    __table_args__ = (
+        Index("ix_legal_provisions_anexo_item", "version_id", "anexo", "item"),
+        Index("ix_legal_provisions_tsv", "tsv", postgresql_using="gin"),
+    )
 
     id: Mapped[uuid.UUID] = uuid_pk()
     version_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("ref_versions.id", ondelete="CASCADE"))
@@ -175,6 +178,18 @@ class LegalProvision(Base):
     texto: Mapped[str] = mapped_column(Text)
     codigos_citados: Mapped[list[str]] = mapped_column(ARRAY(String(20)), default=list)
     ordem: Mapped[int] = mapped_column(Integer, default=0)
+    # Base normativa temporal: de qual ato é o trecho e quando ele vale.
+    norma: Mapped[str] = mapped_column(String(80), default="LC 214/2025")
+    vigencia_inicio: Mapped[date | None] = mapped_column(Date)
+    vigencia_fim: Mapped[date | None] = mapped_column(Date)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(), nullable=True)
+    tsv: Mapped[Any] = mapped_column(
+        TSVECTOR,
+        Computed(
+            "to_tsvector('portuguese', immutable_unaccent(coalesce(titulo_anexo, '') || ' ' || texto))",
+            persisted=True,
+        ),
+    )
 
 
 class ConditionAttribute(Base):

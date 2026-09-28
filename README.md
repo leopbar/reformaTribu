@@ -1,33 +1,41 @@
 # Auditor Fiscal de Cadastros — Reforma Tributária (LC 214/2025)
 
-Sistema que audita cadastros de produtos e serviços para a Reforma Tributária do consumo. Para cada
-item da planilha de uma empresa, ele:
+Um **analista fiscal digital** para a Reforma Tributária do consumo. O arquivo do ERP é só o ponto de
+partida: para cada item, o sistema reconstrói o raciocínio que um especialista faria para chegar ao
+enquadramento válido **numa data de vigência** (inicialmente 2027) e só então o traduz em CST e cClassTrib.
 
-1. confere se o **NCM** (produtos) ou a **NBS** (serviços) combina com a descrição real do item;
-2. verifica o **enquadramento na LC 214/2025** (anexos com alíquota zero ou reduzida, condições e exceções);
-3. sugere o **CST do IBS/CBS** e o **cClassTrib**, com o dispositivo legal e a confiança;
-4. classifica o item em **Confirmado**, **Corrigido** ou **Análise humana**;
-5. permite que o contador **revise, aprove, altere e exporte** o resultado.
+1. **Conhece quem vende** — o dossiê do estabelecimento (segmento, produção própria, refeições...).
+2. **Entende o que cada item é** — NCM/NBS conferido contra a tabela oficial; o cadastro antigo é evidência, não verdade.
+3. **Investiga a lei uma vez por família** — hipóteses em ordem de precedência, condições, exceções e
+   trechos citados da base normativa versionada (LC 214/2025, EC 132/2023, LC 227/2026, Decreto 12.955/2026,
+   tabela cClassTrib e correlação oficial).
+4. **Aplica aos fatos do item** — fatos com origem (pessoa, ERP, cadastro, texto explícito); suposição da IA
+   não vira fato.
+5. **Pergunta só o que muda o resultado** — agrupado por empresa, categoria ou NCM; a resposta reclassifica
+   os itens na hora, sem novo custo de IA.
+6. **Explica a confiança por dimensão** — e separa **Classificado**, **Aguardando informação**,
+   **Revisão do contador** e **Revisão do especialista**.
+7. **Guarda o dossiê de decisão** — perfil tributário versionado por item, cenário e vigência, auditável meses depois.
+8. **Exporta** o cadastro enriquecido, o perfil tributário e a planilha para o ERP.
 
 > As sugestões são apoio à decisão. A classificação final e a responsabilidade técnica são do
-> profissional responsável. Nada é exportado como final sem aprovação humana.
+> profissional responsável. Itens com confiança alta em todas as dimensões podem ser aprovados
+> automaticamente (configurável); os demais só são exportados após aprovação humana.
 
 ## Como funciona, em uma página
 
-- **Base de referência oficial, versionada**: tabelas NCM (Siscomex), NBS (MDIC), CST/cClassTrib com a
-  correlação oficial dos anexos (Portal da Conformidade Fácil/SVRS) e o texto da LC 214/2025
-  (Planalto). Cada importação é uma versão nova, com URL, data, hash e responsável.
-  ([docs/base-de-referencia.md](docs/base-de-referencia.md))
-- **Regras declarativas**: os anexos viram regras (abrangência por código, exceções, condições,
-  CST/cClassTrib), geradas das fontes oficiais, validadas contra as tabelas e **aprovadas por um
-  superadministrador** comparando com o texto legal. Regras pendentes não são usadas.
-- **Pipeline por item (LangGraph)**: normalização → validação estrutural → memória aprovada → busca
-  híbrida (pgvector + texto em português) → julgamento pelo Claude (só pode escolher entre os códigos
-  candidatos da tabela oficial) → segundo parecer quando há dúvida → motor de regras → decisão com
-  confiança calibrada. Checkpoint no PostgreSQL; Batch API para auditorias grandes.
-  ([docs/arquitetura.md](docs/arquitetura.md))
-- **Revisão rápida**: tabela virtualizada, painel de detalhe com a "régua de conferência", fila de
-  revisão por teclado, aprovação em lote com confirmação, desfazer, exportação XLSX/CSV e relatório PDF.
+- **Base normativa e tabelas oficiais, versionadas**: NCM (Siscomex), NBS (MDIC), CST/cClassTrib com a
+  correlação oficial (Portal da Conformidade Fácil/SVRS), o texto da LC 214/2025 e os atos da reforma
+  importados do Planalto. Cada importação é uma versão nova, com URL, data, hash e responsável; os trechos
+  legais têm busca semântica. ([docs/base-de-referencia.md](docs/base-de-referencia.md))
+- **Analista por item (LangGraph)**: identificação (busca híbrida + Claude restrito a códigos oficiais +
+  segundo parecer) → **investigação jurídica da família** (Claude com pacote de evidências e lista fechada
+  de cClassTrib) → fatos do item (modelo leve) → avaliação determinística → perfil tributário e perguntas.
+  Checkpoint no PostgreSQL; Batch API para auditorias grandes. ([docs/arquitetura.md](docs/arquitetura.md))
+- **Regras curadas são opcionais**: uma regra aprovada vira precedente — aumenta a confiança quando
+  confirma a conclusão e aponta conflito quando diverge. Não é mais pré-requisito.
+- **Revisão rápida**: tabela virtualizada, perguntas agrupadas, famílias com o raciocínio completo,
+  dossiê de decisão por item, fila de revisão por nível, aprovação em lote, desfazer, exportação e PDF.
 - **Multi-tenant** com Row-Level Security no PostgreSQL, papéis, log de auditoria imutável.
 
 ## Requisitos
@@ -43,18 +51,17 @@ item da planilha de uma empresa, ele:
 ```bash
 cp .env.example .env          # preencha as senhas, JWT_SECRET e ANTHROPIC_API_KEY
 make up                       # sobe db, redis, embeddings, api, worker, beat, flower e frontend
-make seed-reference           # importa NCM, NBS, cClassTrib e LC 214 (gera as regras como PENDENTES)
+make seed-reference           # importa NCM, NBS, cClassTrib, LC 214 e os atos da reforma (EC 132, LC 227, Decreto 12.955)
 make bootstrap                # cria o superadministrador (senha temporária exibida uma vez)
 make seed-demo                # (opcional, só em desenvolvimento) organização e empresas fictícias
 ```
 
 Depois:
 
-1. Entre como superadministrador em http://localhost:5180 → **Base de referência → Revisar regras
-   legais**. Revise e aprove as regras (texto legal lado a lado). **Sem regras aprovadas, todos os itens
-   vão para análise humana** — de propósito.
-2. Crie uma organização em **Organizações** (ou use a de demonstração), entre com o administrador dela,
-   cadastre empresas e envie a primeira planilha.
+1. Entre com o administrador da organização (ou crie uma em **Organizações** como superadministrador),
+   cadastre a empresa e preencha o **dossiê do estabelecimento** na página dela.
+2. Envie a primeira planilha em **Auditorias → Enviar planilha**, confira o custo estimado e inicie.
+3. Responda às **perguntas** agrupadas, revise o que ficou para o contador ou o especialista e exporte.
 
 Portas no host (configuráveis no `.env`): frontend `5180`, API `8100` (`/api/docs`), Flower `5556`,
 PostgreSQL `5432` (somente 127.0.0.1).
@@ -68,7 +75,8 @@ Todas as variáveis estão documentadas em [.env.example](.env.example). As prin
 | Variável | Para quê |
 |---|---|
 | `ANTHROPIC_API_KEY` | Chave da API do Claude (somente no servidor). |
-| `LLM_MODEL_PRIMARY` / `LLM_MODEL_ESCALATION` / `LLM_MODEL_LIGHT` | Modelos (padrão `claude-sonnet-5`, `claude-opus-5-5`, `claude-haiku-4-5-20251001`). Também configuráveis por organização. |
+| `LLM_MODEL_PRIMARY` / `LLM_MODEL_ESCALATION` / `LLM_MODEL_LIGHT` | Modelos: identificação `claude-haiku-4-5-20251001`; segundo parecer e investigação jurídica `claude-sonnet-5`; fatos da descrição `claude-haiku-4-5-20251001`. Também configuráveis por organização. |
+| `LLM_EFFORT_ESCALATION` / `LLM_EFFORT_INVESTIGATION` | Esforço de raciocínio do segundo parecer e da investigação (padrão `medium`; `high` custa mais e pensa mais). |
 | `LLM_BATCH_MIN_ITEMS` | A partir de quantos itens com IA a auditoria usa a Batch API (50% mais barata). |
 | `EMBEDDINGS_MODEL` / `EMBEDDINGS_DIM` | Modelo local de embeddings. Trocar exige `make migrate` (reindexa sozinho). |
 | `UPLOAD_MAX_MB`, `UPLOAD_MAX_ROWS` | Limites de upload. |
@@ -92,7 +100,7 @@ make logs S=worker   # logs de um serviço
 
 | Sintoma | Causa provável e solução |
 |---|---|
-| "Base de referência incompleta" em todos os itens | Falta importar uma tabela ou **aprovar as regras**. Veja Base de referência. |
+| "Base de referência incompleta" em todos os itens | Falta importar uma tabela (NCM/NBS, cClassTrib ou LC 214). Veja Base normativa. |
 | Importação da NCM falha com "não é um JSON válido" | O Portal Único Siscomex entra em manutenção. Tente mais tarde ou baixe o JSON e envie pela tela (instruções na própria tela). |
 | Contêiner `embeddings` reiniciando (código 137) | Falta de memória. Aumente a memória do Docker ou mantenha o modelo `multilingual-e5-base`. O `bge-m3` precisa de 6 GB+ livres. |
 | "A chave da API da Anthropic não está configurada" | Defina `ANTHROPIC_API_KEY` no `.env` e rode `docker compose up -d api worker`. |

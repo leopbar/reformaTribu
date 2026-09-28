@@ -10,12 +10,16 @@ import { DetalheItem } from "./DetalheItem";
 
 type Ordem = "incertos" | "linha" | "analise";
 
+const REVISAVEIS = ["classificado", "aguardando_informacao", "revisao_contador", "revisao_especialista"];
+const PESO_CONFIANCA: Record<string, number> = { baixa: 0, incompleta: 1, media: 2, alta: 3 };
+
 export function ordenarFila(itens: LinhaItem[], filtro: string, ordem: Ordem): LinhaItem[] {
   const fila = itens.filter(
-    (i) => i.revisao_status === "pendente" && ["confirmado", "corrigido", "analise_humana"].includes(i.status) && (filtro === "todos" || i.status === filtro),
+    (i) => i.revisao_status === "pendente" && REVISAVEIS.includes(i.status) && (filtro === "todos" || i.status === filtro),
   );
-  const peso: Record<string, number> = { analise_humana: 0, corrigido: 1, confirmado: 2 };
-  if (ordem === "incertos") return fila.sort((a, b) => (a.confianca ?? 0) - (b.confianca ?? 0) || a.linha - b.linha);
+  const peso: Record<string, number> = { revisao_especialista: 0, revisao_contador: 1, aguardando_informacao: 2, classificado: 3 };
+  if (ordem === "incertos")
+    return fila.sort((a, b) => (PESO_CONFIANCA[a.confianca_global ?? ""] ?? 0) - (PESO_CONFIANCA[b.confianca_global ?? ""] ?? 0) || a.linha - b.linha);
   if (ordem === "analise") return fila.sort((a, b) => (peso[a.status] ?? 3) - (peso[b.status] ?? 3) || a.linha - b.linha);
   return fila.sort((a, b) => a.linha - b.linha);
 }
@@ -104,8 +108,8 @@ function Fila({ id, nome, itens }: { id: string; nome: string; itens: LinhaItem[
         subtitulo={`${fmtNum(revisados)} de ${fmtNum(fila.length)} revisados nesta fila · ${fmtNum(revisadosSessao)} decisões nesta sessão`}
         acoes={
           <>
-            <Select aria-label="Filtrar fila" className="w-48" valor={filtro} aoMudar={setFiltro} opcoes={[{ valor: "todos", rotulo: "Todos os resultados" }, { valor: "analise_humana", rotulo: "Análise humana" }, { valor: "corrigido", rotulo: "Corrigidos" }, { valor: "confirmado", rotulo: "Confirmados" }]} />
-            <Select aria-label="Ordem" className="w-52" valor={ordem} aoMudar={(v) => setOrdem(v as Ordem)} opcoes={[{ valor: "analise", rotulo: "Análise humana primeiro" }, { valor: "incertos", rotulo: "Menor confiança primeiro" }, { valor: "linha", rotulo: "Ordem da planilha" }]} />
+            <Select aria-label="Filtrar fila" className="w-48" valor={filtro} aoMudar={setFiltro} opcoes={[{ valor: "todos", rotulo: "Todos os níveis" }, { valor: "revisao_especialista", rotulo: "Revisão do especialista" }, { valor: "revisao_contador", rotulo: "Revisão do contador" }, { valor: "aguardando_informacao", rotulo: "Aguardando informação" }, { valor: "classificado", rotulo: "Classificados" }]} />
+            <Select aria-label="Ordem" className="w-52" valor={ordem} aoMudar={(v) => setOrdem(v as Ordem)} opcoes={[{ valor: "analise", rotulo: "Especialista, depois contador" }, { valor: "incertos", rotulo: "Menor confiança primeiro" }, { valor: "linha", rotulo: "Ordem da planilha" }]} />
             <Button variant="fantasma" onClick={() => setAjuda(true)}>
               <Keyboard /> Atalhos <Kbd>?</Kbd>
             </Button>
@@ -170,8 +174,8 @@ function Fila({ id, nome, itens }: { id: string; nome: string; itens: LinhaItem[
             {[
               ["J ou ↓", "Próximo item"],
               ["K ou ↑", "Item anterior"],
-              ["A", "Aprovar sugestão (e ir para o próximo)"],
-              ["E", "Editar código (busca na tabela oficial)"],
+              ["A", "Aprovar o enquadramento (e ir para o próximo)"],
+              ["E", "Corrigir o código (o item é reanalisado)"],
               ["R", "Rejeitar sugestão"],
               ["U", "Desfazer a última decisão do item"],
               ["Ctrl + K", "Paleta de comandos"],

@@ -43,6 +43,8 @@ class OrgSettings(Base):
     alerta_orcamento_pct: Mapped[int] = mapped_column(Integer, default=80)
     lote_min_itens: Mapped[int | None] = mapped_column(Integer)
     imposto_seletivo_exige_analise: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Itens com confiança alta em todas as dimensões são aprovados sem revisão humana.
+    aprovacao_automatica: Mapped[bool] = mapped_column(Boolean, default=True)
     retencao_arquivos_dias: Mapped[int] = mapped_column(Integer, default=30)
     ultimo_alerta_orcamento: Mapped[str | None] = mapped_column(String(7))  # AAAA-MM
     extras: Mapped[dict[str, Any]] = mapped_column(default=dict)
@@ -95,6 +97,8 @@ class Company(Base):
     uf: Mapped[str] = mapped_column(String(2))
     atividade_principal: Mapped[str | None] = mapped_column(String(300))
     cnae: Mapped[str | None] = mapped_column(String(10))
+    # Segmento do dossiê (supermercado, restaurante, farmácia...): define as perguntas iniciais.
+    segmento: Mapped[str | None] = mapped_column(String(40))
     # Atributos usados por condições legais de fonte "empresa" (ex.: profissao_regulamentada).
     atributos: Mapped[dict[str, Any]] = mapped_column(default=dict)
     ativo: Mapped[bool] = mapped_column(Boolean, default=True)

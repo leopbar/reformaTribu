@@ -1,3 +1,4 @@
+from app.models.analise import CompanyFact, Pendencia, TaxProfile, TaxThesis
 from app.models.audit import (
     Abbreviation,
     ApprovedMemory,
@@ -46,6 +47,7 @@ __all__ = [
     "CClassTribCorrelacao",
     "Company",
     "CompanyAccess",
+    "CompanyFact",
     "ConditionAttribute",
     "CstCode",
     "ExportJob",
@@ -63,10 +65,13 @@ __all__ = [
     "Notification",
     "OrgSettings",
     "Organization",
+    "Pendencia",
     "RefSnapshot",
     "RefVersion",
     "RefreshToken",
     "RuleCode",
+    "TaxProfile",
+    "TaxThesis",
     "UploadedFile",
     "User",
 ]

@@ -148,7 +148,7 @@ class AuditItem(Base):
     tipo: Mapped[str | None] = mapped_column(String(20))
     etapa: Mapped[str | None] = mapped_column(String(40))
     tentativa: Mapped[int] = mapped_column(Integer, default=1)
-    status: Mapped[str] = mapped_column(String(20), default="pendente")
+    status: Mapped[str] = mapped_column(String(30), default="pendente")
     motivos: Mapped[list[str]] = mapped_column(ARRAY(String(50)), default=list)
     perguntas: Mapped[list[Any]] = mapped_column(default=list)
     origem: Mapped[str | None] = mapped_column(String(30))  # pipeline | memoria_aprovada
@@ -173,6 +173,22 @@ class AuditItem(Base):
     processado_em: Mapped[datetime | None]
     erro: Mapped[str | None] = mapped_column(Text)
 
+    # Analista fiscal (cópia do perfil tributário vigente, para listagens rápidas)
+    cenario: Mapped[str] = mapped_column(String(40), default="venda_consumidor")
+    identidade: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    thesis_id: Mapped[uuid.UUID | None]
+    hipotese: Mapped[str | None] = mapped_column(String(20))
+    conclusao: Mapped[str | None] = mapped_column(Text)
+    fundamentos: Mapped[list[Any]] = mapped_column(default=list)
+    fatos_usados: Mapped[list[Any]] = mapped_column(default=list)
+    dimensoes: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    confianca_global: Mapped[str | None] = mapped_column(String(15))
+    nivel_revisao: Mapped[str | None] = mapped_column(String(20))
+    perc_red_ibs: Mapped[Decimal | None] = mapped_column(Numeric(7, 4))
+    perc_red_cbs: Mapped[Decimal | None] = mapped_column(Numeric(7, 4))
+    is_situacao: Mapped[str | None] = mapped_column(String(20))
+    perfil_versao: Mapped[int] = mapped_column(Integer, default=0)
+
     # Revisão humana
     revisao_status: Mapped[str] = mapped_column(String(20), default="pendente")
     final_tipo_codigo: Mapped[str | None] = mapped_column(String(3))
@@ -183,6 +199,7 @@ class AuditItem(Base):
     final_dispositivo: Mapped[str | None] = mapped_column(Text)
     revisado_por: Mapped[uuid.UUID | None]
     revisado_em: Mapped[datetime | None]
+    aprovado_automaticamente: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = updated_at()
 
 

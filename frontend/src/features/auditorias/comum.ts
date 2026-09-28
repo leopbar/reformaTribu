@@ -21,7 +21,8 @@ export const ETAPAS: Record<string, string> = {
   recuperar_candidatos: "Buscando códigos candidatos",
   julgar_coerencia: "Análise por IA",
   escalar: "Segundo parecer",
-  enquadrar: "Enquadramento legal",
+  investigar: "Investigação jurídica da família",
+  levantar_fatos: "Levantando fatos do item",
   aguardando_lote: "Aguardando lote",
 };
 
@@ -50,14 +51,42 @@ export interface LinhaItem {
   tipo_codigo: string;
   status: string;
   motivos: string[];
-  confianca: number | null;
+  confianca_global: string | null;
   revisao_status: string;
-  anexo: string | null;
+  tratamento: string | null;
   cclasstrib_sugerido: string | null;
   cst_sugerido: string | null;
-  imposto_seletivo: boolean;
+  imposto_seletivo: string | null;
   perguntas: number;
   origem: string | null;
+  nivel_revisao: string | null;
+  aprovado_automaticamente: boolean;
+  categoria: string | null;
+  hipotese: string | null;
+}
+
+export const TRATAMENTO: Record<string, string> = {
+  beneficio: "Benefício (redução/alíquota zero)",
+  regime_especifico: "Regime específico",
+  regra_geral: "Tributação integral",
+  nao_incidencia: "Não incidência",
+};
+
+export type DossieDecisao = Schemas["DossieDecisao"];
+
+export function useDossieItem(id: string | null) {
+  return useQuery({
+    queryKey: ["dossie-item", id],
+    queryFn: () => ok(api.GET("/api/itens/{item_id}/dossie", { params: { path: { item_id: id! } } })),
+    enabled: !!id,
+  });
+}
+
+export function usePendencias(auditId: string, status: string = "aberta") {
+  return useQuery({
+    queryKey: ["pendencias", auditId, status],
+    queryFn: () => ok(api.GET("/api/auditorias/{audit_id}/pendencias", { params: { path: { audit_id: auditId }, query: { status } } })),
+  });
 }
 
 export function useItens(auditId: string) {

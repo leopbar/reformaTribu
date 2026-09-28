@@ -173,6 +173,16 @@ def verificar_lotes(org_id: uuid.UUID) -> dict[uuid.UUID, list[uuid.UUID]]:
                     call.status, call.erro = StatusChamadaLLM.FALHOU, f"Lote: requisição inválida ({tipo})"
                 if call.item_id:
                     retomar[audit_id].append(call.item_id)
+            # Chamadas são compartilhadas (itens idênticos, teses de família): retoma todos os que esperam.
+            for a_id, i_id in sess.execute(
+                select(AuditItem.audit_id, AuditItem.id)
+                .join(Audit, Audit.id == AuditItem.audit_id)
+                .where(
+                    AuditItem.etapa == "aguardando_lote",
+                    Audit.status.in_([StatusAuditoria.PROCESSANDO, StatusAuditoria.AGUARDANDO_LOTE]),
+                )
+            ):
+                retomar[a_id].append(i_id)
             lb.status = StatusLote.CONCLUIDO
             lb.contagens = dict(contagem)
             lb.concluido_em = datetime.now(UTC)

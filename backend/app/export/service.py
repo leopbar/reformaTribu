@@ -17,6 +17,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.analise import transicao
 from app.core.codes import formatar_cnpj, formatar_codigo
 from app.models import (
     Audit,
@@ -47,7 +48,15 @@ COLUNAS_DISPONIVEIS: dict[str, str] = {
     "gtin": "GTIN",
     "cest": "CEST",
     "unidade": "Unidade",
-    "status_auditoria": "Resultado da auditoria",
+    "status_auditoria": "Resultado da análise",
+    "confianca": "Confiança",
+    "hipotese": "Hipótese aplicada",
+    "conclusao": "Fundamentação",
+    "reducao_ibs": "Redução IBS (%)",
+    "reducao_cbs": "Redução CBS (%)",
+    "imposto_seletivo": "Imposto Seletivo",
+    "vigencia": "Vigência",
+    "cenario": "Cenário",
     "alterado": "Alterado?",
     "aprovado_por": "Aprovado por",
     "aprovado_em": "Aprovado em",
@@ -68,7 +77,14 @@ LAYOUT_PADRAO = [
     "aprovado_em",
 ]
 
-ROTULO_STATUS = {"confirmado": "Confirmado", "corrigido": "Corrigido", "analise_humana": "Análise humana"}
+ROTULO_STATUS = {
+    "classificado": "Classificado",
+    "aguardando_informacao": "Aguardando informação",
+    "revisao_contador": "Revisão do contador",
+    "revisao_especialista": "Revisão do especialista",
+}
+ROTULO_CENARIO = {"venda_consumidor": "Venda ao consumidor"}
+ROTULO_IS = {"sujeito": "Sujeito", "nao_sujeito": "Não sujeito", "indefinido": "A confirmar"}
 TEMPLATES = Path(__file__).with_name("templates")
 
 
@@ -87,6 +103,8 @@ def linhas_aprovadas(session: Session, audit_id: uuid.UUID, ncm_formatado: bool)
         )
     )
     nomes = _usuarios(session, {i.revisado_por for i in itens if i.revisado_por})
+    audit = session.get(Audit, audit_id)
+    vigencia = audit.data_referencia.strftime("%d/%m/%Y") if audit else ""
     saida = []
     for i in itens:
         eh_nbs = i.final_tipo_codigo == "nbs"
@@ -115,25 +133,62 @@ def linhas_aprovadas(session: Session, audit_id: uuid.UUID, ncm_formatado: bool)
                     or (i.cclasstrib_atual and i.cclasstrib_atual != i.final_cclasstrib)
                 )
                 else "Não",
-                "aprovado_por": nomes.get(i.revisado_por, "") if i.revisado_por else "",
+                "aprovado_por": "Automático (confiança alta)"
+                if i.aprovado_automaticamente
+                else (nomes.get(i.revisado_por, "") if i.revisado_por else ""),
                 "aprovado_em": i.revisado_em.astimezone().strftime("%d/%m/%Y %H:%M") if i.revisado_em else "",
+                "confianca": i.confianca_global or "",
+                "hipotese": i.hipotese or "",
+                "conclusao": i.conclusao or "",
+                "reducao_ibs": float(i.perc_red_ibs) if i.perc_red_ibs is not None else "",
+                "reducao_cbs": float(i.perc_red_cbs) if i.perc_red_cbs is not None else "",
+                "imposto_seletivo": ROTULO_IS.get(i.is_situacao or "", ""),
+                "vigencia": vigencia,
+                "cenario": ROTULO_CENARIO.get(i.cenario, i.cenario),
+                "descricao_normalizada": (i.identidade or {}).get("descricao_normalizada") or "",
+                "descricao_oficial": (i.identidade or {}).get("descricao_oficial") or "",
+                "identificacao": (i.identidade or {}).get("situacao") or "",
+                "problemas_cadastro": ", ".join((i.identidade or {}).get("problemas_cadastro") or []),
             }
         )
     return saida
 
 
-def gerar_planilha(linhas: list[dict[str, Any]], colunas: list[dict[str, str]], formato: str, sep: str) -> bytes:
-    if formato == "csv":
-        texto = io.StringIO()
-        w = csv.writer(texto, delimiter=sep, quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
-        w.writerow([c["titulo"] for c in colunas])
-        for linha in linhas:
-            w.writerow([linha.get(c["campo"], "") for c in colunas])
-        return texto.getvalue().encode("utf-8-sig")
-    wb = Workbook()
-    ws = wb.active
-    assert ws is not None
-    ws.title = "Itens aprovados"
+# Duas visões do resultado: o que o item é (cadastro enriquecido) e como ele é tributado (perfil).
+COLUNAS_CADASTRO = [
+    ("codigo_interno", "Código interno"),
+    ("descricao", "Descrição original"),
+    ("descricao_normalizada", "Descrição normalizada"),
+    ("tipo", "Tipo"),
+    ("ncm", "NCM"),
+    ("nbs", "NBS"),
+    ("descricao_oficial", "Descrição oficial do código"),
+    ("ncm_anterior", "Código anterior"),
+    ("identificacao", "Identificação"),
+    ("problemas_cadastro", "Problemas no cadastro legado"),
+    ("gtin", "GTIN"),
+    ("unidade", "Unidade"),
+]
+COLUNAS_PERFIL = [
+    ("codigo_interno", "Código interno"),
+    ("descricao", "Descrição"),
+    ("cenario", "Cenário"),
+    ("vigencia", "Vigência"),
+    ("cst_ibs_cbs", "CST IBS/CBS"),
+    ("cclasstrib", "cClassTrib"),
+    ("reducao_ibs", "Redução IBS (%)"),
+    ("reducao_cbs", "Redução CBS (%)"),
+    ("imposto_seletivo", "Imposto Seletivo"),
+    ("hipotese", "Hipótese aplicada"),
+    ("dispositivo_legal", "Fundamento"),
+    ("conclusao", "Conclusão"),
+    ("confianca", "Confiança"),
+    ("aprovado_por", "Aprovado por"),
+    ("aprovado_em", "Aprovado em"),
+]
+
+
+def _aba(ws: Any, linhas: list[dict[str, Any]], colunas: list[dict[str, str]]) -> None:
     ws.append([c["titulo"] for c in colunas])
     for cel in ws[1]:
         cel.font = Font(bold=True, color="FFFFFF")
@@ -158,6 +213,23 @@ def gerar_planilha(linhas: list[dict[str, Any]], colunas: list[dict[str, str]], 
                 cel.number_format = "@"
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
+
+
+def gerar_planilha(linhas: list[dict[str, Any]], colunas: list[dict[str, str]], formato: str, sep: str) -> bytes:
+    if formato == "csv":
+        texto = io.StringIO()
+        w = csv.writer(texto, delimiter=sep, quoting=csv.QUOTE_MINIMAL, lineterminator="\r\n")
+        w.writerow([c["titulo"] for c in colunas])
+        for linha in linhas:
+            w.writerow([linha.get(c["campo"], "") for c in colunas])
+        return texto.getvalue().encode("utf-8-sig")
+    wb = Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "Planilha ERP"
+    _aba(ws, linhas, colunas)
+    _aba(wb.create_sheet("Cadastro enriquecido"), linhas, [{"campo": c, "titulo": t} for c, t in COLUNAS_CADASTRO])
+    _aba(wb.create_sheet("Perfil tributário"), linhas, [{"campo": c, "titulo": t} for c, t in COLUNAS_PERFIL])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -179,7 +251,10 @@ def dados_relatorio(session: Session, audit_id: uuid.UUID) -> dict[str, Any]:
     snap = session.get(RefSnapshot, audit.snapshot_id) if audit.snapshot_id else None
     versoes = []
     if snap:
-        for fonte, vid in (snap.versoes or {}).items():
+        for fonte, vid in [
+            *(snap.versoes or {}).items(),
+            *(("normas", v) for v in (snap.completude or {}).get("normas_versoes", [])),
+        ]:
             v = session.get(RefVersion, uuid.UUID(vid)) if vid else None
             versoes.append(
                 {
@@ -249,6 +324,9 @@ def dados_relatorio(session: Session, audit_id: uuid.UUID) -> dict[str, Any]:
         "total_alterados": len(alterados),
         "trilha": [{"revisor": k[0], "acao": k[1], "n": n} for k, n in sorted(por_revisor.items())],
         "custo": float(audit.custo_usd or 0),
+        "aprovados_auto": sum(1 for i in itens if i.aprovado_automaticamente),
+        "familias": len({i.thesis_id for i in itens if i.thesis_id}),
+        "transicao": transicao.como_dict(audit.data_referencia),
         "tokens": audit.tokens or {},
         "configuracao": audit.configuracao or {},
     }

@@ -15,6 +15,8 @@ class Perm(StrEnum):
     ENVIAR_PLANILHA = "enviar_planilha"
     CRIAR_AUDITORIA = "criar_auditoria"
     REVISAR = "revisar"
+    # Responder perguntas do analista e manter o dossiê (fatos simples sobre produtos e loja).
+    RESPONDER = "responder"
     EXPORTAR = "exportar"
     VER_LOG = "ver_log"
     GERENCIAR_ABREVIACOES = "gerenciar_abreviacoes"
@@ -23,9 +25,17 @@ class Perm(StrEnum):
 PERMISSOES: dict[str, frozenset[Perm]] = {
     Papel.ADMINISTRADOR: frozenset(Perm),
     Papel.REVISOR: frozenset(
-        {Perm.VER, Perm.ENVIAR_PLANILHA, Perm.CRIAR_AUDITORIA, Perm.REVISAR, Perm.EXPORTAR, Perm.GERENCIAR_ABREVIACOES}
+        {
+            Perm.VER,
+            Perm.ENVIAR_PLANILHA,
+            Perm.CRIAR_AUDITORIA,
+            Perm.REVISAR,
+            Perm.RESPONDER,
+            Perm.EXPORTAR,
+            Perm.GERENCIAR_ABREVIACOES,
+        }
     ),
-    Papel.OPERADOR: frozenset({Perm.VER, Perm.ENVIAR_PLANILHA, Perm.CRIAR_AUDITORIA}),
+    Papel.OPERADOR: frozenset({Perm.VER, Perm.ENVIAR_PLANILHA, Perm.CRIAR_AUDITORIA, Perm.RESPONDER}),
     Papel.LEITURA: frozenset({Perm.VER}),
 }
 

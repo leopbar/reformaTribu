@@ -655,6 +655,166 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/empresas/{company_id}/dossie": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Obter Dossie */
+        get: operations["obter_dossie_api_empresas__company_id__dossie_get"];
+        put?: never;
+        /** Salvar Dossie */
+        post: operations["salvar_dossie_api_empresas__company_id__dossie_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/empresas/{company_id}/fatos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Listar Fatos */
+        get: operations["listar_fatos_api_empresas__company_id__fatos_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auditorias/{audit_id}/pendencias": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Listar Pendencias */
+        get: operations["listar_pendencias_api_auditorias__audit_id__pendencias_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pendencias/{pendencia_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Obter Pendencia */
+        get: operations["obter_pendencia_api_pendencias__pendencia_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pendencias/{pendencia_id}/responder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Responder Pendencia */
+        post: operations["responder_pendencia_api_pendencias__pendencia_id__responder_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auditorias/{audit_id}/teses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Listar Teses */
+        get: operations["listar_teses_api_auditorias__audit_id__teses_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teses/{tese_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Obter Tese */
+        get: operations["obter_tese_api_teses__tese_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/teses/{tese_id}/aprovar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Aprovar Tese
+         * @description Curadoria: o revisor valida o raciocínio da família; os itens são reavaliados (sem IA).
+         */
+        post: operations["aprovar_tese_api_teses__tese_id__aprovar_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/itens/{item_id}/dossie": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dossie Decisao
+         * @description Tudo o que é preciso para responder, meses depois: por que este item recebeu este cClassTrib?
+         */
+        get: operations["dossie_decisao_api_itens__item_id__dossie_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auditorias/{audit_id}/exportacoes": {
         parameters: {
             query?: never;
@@ -807,6 +967,23 @@ export interface paths {
         put?: never;
         /** Importar */
         post: operations["importar_api_referencia_importar_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/referencia/importar-ato": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Importar Ato */
+        post: operations["importar_ato_api_referencia_importar_ato_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1127,6 +1304,11 @@ export interface components {
             /** Nova Senha */
             nova_senha: string;
         };
+        /** AprovarTeseIn */
+        AprovarTeseIn: {
+            /** Comentario */
+            comentario?: string | null;
+        };
         /** AtividadeOut */
         AtividadeOut: {
             /** Id */
@@ -1150,6 +1332,18 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** AtoNormativoOut */
+        AtoNormativoOut: {
+            /** Chave */
+            chave: string;
+            /** Rotulo */
+            rotulo: string;
+            /** Ementa */
+            ementa: string;
+            /** Url */
+            url: string;
+            versao: components["schemas"]["VersaoOut"] | null;
         };
         /** AtributoIn */
         AtributoIn: {
@@ -1419,6 +1613,8 @@ export interface components {
             lote_min_itens?: number | null;
             /** Imposto Seletivo Exige Analise */
             imposto_seletivo_exige_analise?: boolean | null;
+            /** Aprovacao Automatica */
+            aprovacao_automatica?: boolean | null;
             /** Retencao Arquivos Dias */
             retencao_arquivos_dias?: number | null;
             /** Nome */
@@ -1448,6 +1644,8 @@ export interface components {
             lote_min_itens: number | null;
             /** Imposto Seletivo Exige Analise */
             imposto_seletivo_exige_analise: boolean;
+            /** Aprovacao Automatica */
+            aprovacao_automatica: boolean;
             /** Retencao Arquivos Dias */
             retencao_arquivos_dias: number;
             /** Modelos Disponiveis */
@@ -1484,6 +1682,108 @@ export interface components {
             review_id?: string | null;
             /** Mensagem */
             mensagem: string;
+        };
+        /** DossieDecisao */
+        DossieDecisao: {
+            /** Item */
+            item: {
+                [key: string]: unknown;
+            };
+            /** Identidade */
+            identidade: {
+                [key: string]: unknown;
+            };
+            /** Resultado */
+            resultado: {
+                [key: string]: unknown;
+            };
+            /** Dimensoes */
+            dimensoes: {
+                [key: string]: unknown;
+            }[];
+            /** Fatos Usados */
+            fatos_usados: {
+                [key: string]: unknown;
+            }[];
+            /** Fatos Do Item */
+            fatos_do_item: components["schemas"]["FatoOut"][];
+            /** Fundamentos */
+            fundamentos: {
+                [key: string]: unknown;
+            }[];
+            /** Hipoteses */
+            hipoteses: {
+                [key: string]: unknown;
+            }[];
+            /** Perguntas */
+            perguntas: {
+                [key: string]: unknown;
+            }[];
+            /** Tese */
+            tese: {
+                [key: string]: unknown;
+            } | null;
+            /** Versoes Perfil */
+            versoes_perfil: {
+                [key: string]: unknown;
+            }[];
+            /** Base Normativa */
+            base_normativa: {
+                [key: string]: unknown;
+            }[];
+            /** Transicao */
+            transicao: {
+                [key: string]: string;
+            };
+            /** Revisoes */
+            revisoes: {
+                [key: string]: unknown;
+            }[];
+            /** Chamadas Ia */
+            chamadas_ia: {
+                [key: string]: unknown;
+            }[];
+        };
+        /** DossieIn */
+        DossieIn: {
+            /** Segmento */
+            segmento?: string | null;
+            /** Respostas */
+            respostas?: {
+                [key: string]: string;
+            };
+        };
+        /** DossieOut */
+        DossieOut: {
+            /**
+             * Company Id
+             * Format: uuid
+             */
+            company_id: string;
+            /** Empresa */
+            empresa: string;
+            /** Segmento */
+            segmento: string | null;
+            /** Segmentos */
+            segmentos: {
+                [key: string]: string;
+            }[];
+            /** Cadastro */
+            cadastro: {
+                [key: string]: unknown;
+            };
+            /** Perguntas */
+            perguntas: components["schemas"]["PerguntaDossieOut"][];
+            /** Perguntas Das Analises */
+            perguntas_das_analises: components["schemas"]["PerguntaDossieOut"][];
+            /** Outros Fatos */
+            outros_fatos: components["schemas"]["FatoOut"][];
+            /** Completo */
+            completo: boolean;
+            /** Faltando */
+            faltando: number;
+            /** Perguntas Abertas Em Auditorias */
+            perguntas_abertas_em_auditorias: number;
         };
         /** EdicaoIn */
         EdicaoIn: {
@@ -1579,8 +1879,8 @@ export interface components {
             em_andamento: number;
             /** Pendentes Revisao */
             pendentes_revisao: number;
-            /** Analise Humana Pendente */
-            analise_humana_pendente: number;
+            /** Aguardando Informacao */
+            aguardando_informacao: number;
             /** Ultima Auditoria Em */
             ultima_auditoria_em: string | null;
             /** Ultima Auditoria Id */
@@ -1617,11 +1917,42 @@ export interface components {
             /** Trecho Legal */
             trecho_legal?: string | null;
         };
+        /** FatoOut */
+        FatoOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Escopo */
+            escopo: string;
+            /** Grupo Chave */
+            grupo_chave: string | null;
+            /** Item Chave */
+            item_chave: string | null;
+            /** Atributo */
+            atributo: string;
+            /** Valor */
+            valor: string;
+            /** Origem */
+            origem: string;
+            /** Origem Rotulo */
+            origem_rotulo: string;
+            /** Evidencia */
+            evidencia: string | null;
+            /** Autor Email */
+            autor_email: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
         /**
          * FonteReferencia
          * @enum {string}
          */
-        FonteReferencia: "ncm" | "nbs" | "cclasstrib" | "lc214";
+        FonteReferencia: "ncm" | "nbs" | "cclasstrib" | "lc214" | "normas";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1631,6 +1962,11 @@ export interface components {
         IdsIn: {
             /** Ids */
             ids: string[];
+        };
+        /** ImportarAtoIn */
+        ImportarAtoIn: {
+            /** Chave */
+            chave: string;
         };
         /** ImportarIn */
         ImportarIn: {
@@ -1690,6 +2026,24 @@ export interface components {
             textos_motivos: {
                 [key: string]: string[];
             };
+        };
+        /** ItemResumo */
+        ItemResumo: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Linha */
+            linha: number;
+            /** Codigo Interno */
+            codigo_interno: string;
+            /** Descricao */
+            descricao: string;
+            /** Sugestao */
+            sugestao?: {
+                [key: string]: string;
+            } | null;
         };
         /**
          * ItensColunares
@@ -1792,8 +2146,8 @@ export interface components {
         LoteIn: {
             /** Status */
             status?: string[] | null;
-            /** Confianca Min */
-            confianca_min?: number | null;
+            /** Confianca */
+            confianca?: string[] | null;
             /** Motivos Excluir */
             motivos_excluir?: string[] | null;
             /** Item Ids */
@@ -2037,6 +2391,65 @@ export interface components {
          * @enum {string}
          */
         Papel: "administrador" | "revisor" | "operador" | "leitura";
+        /** PendenciaOut */
+        PendenciaOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Atributo */
+            atributo: string;
+            /** Escopo */
+            escopo: string;
+            /** Grupo Chave */
+            grupo_chave: string;
+            /** Grupo Rotulo */
+            grupo_rotulo: string | null;
+            /** Pergunta */
+            pergunta: string;
+            /** Motivo */
+            motivo: string | null;
+            /** Opcoes */
+            opcoes: {
+                [key: string]: unknown;
+            }[];
+            /** Nivel */
+            nivel: string;
+            /** Status */
+            status: string;
+            /** Resposta */
+            resposta: string | null;
+            /** Respondido Por Email */
+            respondido_por_email: string | null;
+            /** Respondido Em */
+            respondido_em: string | null;
+            /** Total Itens */
+            total_itens: number;
+            /** Itens */
+            itens: components["schemas"]["ItemResumo"][];
+        };
+        /** PerguntaDossieOut */
+        PerguntaDossieOut: {
+            /** Atributo */
+            atributo: string;
+            /** Pergunta */
+            pergunta: string;
+            /** Ajuda */
+            ajuda: string;
+            /** Opcoes */
+            opcoes: {
+                [key: string]: string;
+            }[];
+            /** Valor */
+            valor: string | null;
+            /** Origem */
+            origem: string | null;
+            /** Autor Email */
+            autor_email: string | null;
+            /** Respondido Em */
+            respondido_em: string | null;
+        };
         /** PreviaLinha */
         PreviaLinha: {
             /** Linha */
@@ -2188,6 +2601,33 @@ export interface components {
             /** Linha Cabecalho */
             linha_cabecalho?: number | null;
         };
+        /** RespostaIn */
+        RespostaIn: {
+            /**
+             * Valor
+             * @description Resposta para todo o grupo.
+             */
+            valor?: string | null;
+            /**
+             * Respostas Itens
+             * @description Exceções por item.
+             */
+            respostas_itens?: {
+                [key: string]: string;
+            };
+            /** Observacao */
+            observacao?: string | null;
+        };
+        /** RespostaOut */
+        RespostaOut: {
+            pendencia: components["schemas"]["PendenciaOut"];
+            /** Reavaliados */
+            reavaliados: number;
+            /** Em Segundo Plano */
+            em_segundo_plano: boolean;
+            /** Mensagem */
+            mensagem: string;
+        };
         /** RevisaoRegraIn */
         RevisaoRegraIn: {
             /** Nota */
@@ -2222,6 +2662,8 @@ export interface components {
             fontes: {
                 [key: string]: components["schemas"]["VersaoOut"] | null;
             };
+            /** Atos Normativos */
+            atos_normativos: components["schemas"]["AtoNormativoOut"][];
             /** Completa */
             completa: boolean;
             /** Faltando */
@@ -2241,6 +2683,110 @@ export interface components {
             tarefa_id: string;
             /** Mensagem */
             mensagem: string;
+        };
+        /** TeseDetalhe */
+        TeseDetalhe: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Tipo Codigo */
+            tipo_codigo: string;
+            /** Codigo */
+            codigo: string;
+            /** Codigo Formatado */
+            codigo_formatado: string;
+            /** Descricao */
+            descricao: string | null;
+            /** Entendimento */
+            entendimento: string | null;
+            /** Hipoteses */
+            hipoteses: {
+                [key: string]: unknown;
+            }[];
+            /** Imposto Seletivo */
+            imposto_seletivo: string | null;
+            /** Itens */
+            itens: number;
+            /** Por Status */
+            por_status: {
+                [key: string]: number;
+            };
+            /** Modelo */
+            modelo: string | null;
+            /** Aprovada Por Email */
+            aprovada_por_email: string | null;
+            /** Aprovada Em */
+            aprovada_em: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Resultado */
+            resultado: {
+                [key: string]: unknown;
+            };
+            /** Validacao */
+            validacao: {
+                [key: string]: unknown;
+            };
+            /** Evidencias */
+            evidencias: {
+                [key: string]: unknown;
+            };
+            /** Fatos Empresa */
+            fatos_empresa: {
+                [key: string]: unknown;
+            };
+            /** Data Referencia */
+            data_referencia: string;
+            /** Transicao */
+            transicao: {
+                [key: string]: string;
+            };
+        };
+        /** TeseResumo */
+        TeseResumo: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Tipo Codigo */
+            tipo_codigo: string;
+            /** Codigo */
+            codigo: string;
+            /** Codigo Formatado */
+            codigo_formatado: string;
+            /** Descricao */
+            descricao: string | null;
+            /** Entendimento */
+            entendimento: string | null;
+            /** Hipoteses */
+            hipoteses: {
+                [key: string]: unknown;
+            }[];
+            /** Imposto Seletivo */
+            imposto_seletivo: string | null;
+            /** Itens */
+            itens: number;
+            /** Por Status */
+            por_status: {
+                [key: string]: number;
+            };
+            /** Modelo */
+            modelo: string | null;
+            /** Aprovada Por Email */
+            aprovada_por_email: string | null;
+            /** Aprovada Em */
+            aprovada_em: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
         };
         /**
          * TipoOrganizacao
@@ -3723,6 +4269,333 @@ export interface operations {
             };
         };
     };
+    obter_dossie_api_empresas__company_id__dossie_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                company_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DossieOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    salvar_dossie_api_empresas__company_id__dossie_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                company_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DossieIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DossieOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listar_fatos_api_empresas__company_id__fatos_get: {
+        parameters: {
+            query?: {
+                escopo?: string | null;
+                limite?: number;
+            };
+            header?: never;
+            path: {
+                company_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FatoOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listar_pendencias_api_auditorias__audit_id__pendencias_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+            };
+            header?: never;
+            path: {
+                audit_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PendenciaOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    obter_pendencia_api_pendencias__pendencia_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pendencia_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PendenciaOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    responder_pendencia_api_pendencias__pendencia_id__responder_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pendencia_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RespostaIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RespostaOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listar_teses_api_auditorias__audit_id__teses_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                audit_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeseResumo"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    obter_tese_api_teses__tese_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tese_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeseDetalhe"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    aprovar_tese_api_teses__tese_id__aprovar_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tese_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AprovarTeseIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeseDetalhe"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dossie_decisao_api_itens__item_id__dossie_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DossieDecisao"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     listar_exportacoes_api_auditorias__audit_id__exportacoes_get: {
         parameters: {
             query?: never;
@@ -4016,6 +4889,39 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ImportarIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TarefaOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    importar_ato_api_referencia_importar_ato_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportarAtoIn"];
             };
         };
         responses: {

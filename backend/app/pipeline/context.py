@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.analise import fatos as fatos_mod
 from app.config import get_settings
 from app.db.session import TenantContext, sync_tenant_session
 from app.models import Abbreviation, Audit, Company, ConditionAttribute, OrgSettings, RefSnapshot
@@ -41,6 +42,13 @@ class Contexto:
     esforco_principal: str
     esforco_escalonamento: str
     is_exige_analise: bool
+    snapshot_id: uuid.UUID | None = None
+    versoes_normas: list[str] = field(default_factory=list)
+    # Dossiê do estabelecimento (valores): entra na chave das teses de família.
+    dossie: dict[str, str] = field(default_factory=dict)
+    modelo_investigacao: str = ""
+    esforco_investigacao: str = "high"
+    cenario: str = "venda_consumidor"
     prompts: dict[str, str] = field(default_factory=dict)  # versões de prompt (avaliação de variantes)
     carregado_em: float = field(default_factory=time.monotonic)
 
@@ -71,6 +79,7 @@ def carregar_contexto(audit_id: uuid.UUID, org_id: uuid.UUID, forcar: bool = Fal
         empresa = sess.get(Company, audit.company_id)
         assert empresa is not None
         cfg = sess.get(OrgSettings, org_id) or OrgSettings(org_id=org_id)
+        dossie = fatos_mod.assinatura(fatos_mod.fatos_empresa(sess, empresa))
         abrevs: dict[str, str] = {}
         # Globais primeiro; as da organização sobrescrevem.
         for a in sess.scalars(
@@ -112,6 +121,11 @@ def carregar_contexto(audit_id: uuid.UUID, org_id: uuid.UUID, forcar: bool = Fal
             esforco_escalonamento=conf.get("esforco_escalonamento") or s.llm_effort_escalation,
             is_exige_analise=bool(conf.get("imposto_seletivo_exige_analise", cfg.imposto_seletivo_exige_analise)),
             prompts=dict(conf.get("prompts") or {}),
+            snapshot_id=snap.id,
+            versoes_normas=list((snap.completude or {}).get("normas_versoes") or []),
+            dossie=dossie,
+            modelo_investigacao=conf.get("modelo_investigacao") or cfg.modelo_escalonamento or s.llm_model_escalation,
+            esforco_investigacao=conf.get("esforco_investigacao") or s.llm_effort_investigation,
         )
     _CACHE[audit_id] = ctx
     return ctx

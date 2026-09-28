@@ -1,13 +1,24 @@
-# Configuração inicial (ver seção 8.1 do documento do projeto).
-nome: sonnet5-opus55-v1
+# Configuração padrão do analista fiscal (piloto: supermercado).
+nome: analista-sonnet5-opus55-v1
 modelo_principal: claude-sonnet-5
 modelo_escalonamento: claude-opus-5-5
+modelo_investigacao: claude-opus-5-5
 esforco_principal: medium
 esforco_escalonamento: high
+esforco_investigacao: high
 prompts:
   julgar_coerencia: v1
   escalar: v1
-limiar_confirmado: 0.90
-limiar_corrigido: 0.85
+  investigar_enquadramento: v1
+  extrair_fatos: v1
 limiar_escalonamento: 0.80
 imposto_seletivo_exige_analise: true
+# Dossiê da empresa de avaliação (fatos de escopo "empresa").
+segmento: supermercado
+dossie:
+  vende_consumidor_final: sim
+  produz_alimentos: sim
+  fornece_refeicoes: nao
+  fraciona_hortifruti: sim
+  vende_combustiveis: nao
+  zona_franca: nao

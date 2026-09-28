@@ -38,33 +38,34 @@
 </style>
 </head>
 <body>
-  <h1>Relatório de auditoria de cadastro fiscal</h1>
-  <div class="sub">{{ audit.nome }} · {{ empresa.razao_social }} · Gerado em {{ gerado_em }} · Organização: {{ org }}</div>
+  <h1>Relatório de classificação fiscal</h1>
+  <div class="sub">{{ audit.nome }} · {{ empresa.razao_social }} · Vigência {{ audit.data_referencia.strftime('%d/%m/%Y') }} ({{ transicao.periodo }}) · Gerado em {{ gerado_em }} · Organização: {{ org }}</div>
 
   <div class="grade">
-    <div class="caixa"><div class="n">{{ total|num }}</div><div class="r">itens auditados</div></div>
-    <div class="caixa ok"><div class="n">{{ status.get('confirmado', 0)|num }}</div><div class="r">Confirmados</div></div>
-    <div class="caixa cor"><div class="n">{{ status.get('corrigido', 0)|num }}</div><div class="r">Corrigidos</div></div>
-    <div class="caixa ah"><div class="n">{{ status.get('analise_humana', 0)|num }}</div><div class="r">Análise humana</div></div>
+    <div class="caixa"><div class="n">{{ total|num }}</div><div class="r">itens analisados</div></div>
+    <div class="caixa ok"><div class="n">{{ status.get('classificado', 0)|num }}</div><div class="r">Classificados (confiança alta)</div></div>
+    <div class="caixa cor"><div class="n">{{ status.get('aguardando_informacao', 0)|num }}</div><div class="r">Aguardando informação</div></div>
+    <div class="caixa ah"><div class="n">{{ (status.get('revisao_contador', 0) + status.get('revisao_especialista', 0))|num }}</div><div class="r">Em revisão (contador/especialista)</div></div>
   </div>
   <div class="grade" style="margin-top:3mm">
-    <div class="caixa"><div class="n">{{ revisao.get('aprovado', 0)|num }}</div><div class="r">aprovados pelo revisor</div></div>
+    <div class="caixa"><div class="n">{{ revisao.get('aprovado', 0)|num }}</div><div class="r">aprovados ({{ aprovados_auto|num }} automaticamente)</div></div>
     <div class="caixa"><div class="n">{{ revisao.get('rejeitado', 0)|num }}</div><div class="r">rejeitados</div></div>
     <div class="caixa"><div class="n">{{ revisao.get('pendente', 0)|num }}</div><div class="r">sem decisão (não exportados)</div></div>
-    <div class="caixa"><div class="n">{{ total_alterados|num }}</div><div class="r">cadastros alterados</div></div>
+    <div class="caixa"><div class="n">{{ familias|num }}</div><div class="r">famílias investigadas</div></div>
   </div>
 
   <h2>Metodologia</h2>
   <ol>
-    <li>Leitura da planilha e limpeza dos dados (normalização de NCM, recuperação sinalizada de zeros à esquerda, verificação de GTIN e duplicidades), sem uso de IA.</li>
-    <li>Validação estrutural de cada código contra a tabela oficial vigente na data de referência ({{ audit.data_referencia.strftime('%d/%m/%Y') }}).</li>
-    <li>Reutilização de classificações previamente aprovadas por profissional (memória aprovada da empresa).</li>
-    <li>Busca híbrida (semântica e textual) dos códigos oficiais mais prováveis para a descrição.</li>
-    <li>Julgamento da coerência entre descrição e código por modelo de linguagem, restrito à lista de candidatos oficiais; segundo parecer independente em casos de baixa confiança ou divergência.</li>
-    <li>Enquadramento na LC 214/2025 por motor de regras declarativas aprovadas, com verificação de exceções e condições legais.</li>
-    <li>Decisão de status com confiança calibrada; dúvidas encaminhadas à análise humana. Somente itens aprovados pelo revisor constam da exportação final.</li>
+    <li>Leitura da planilha e limpeza dos dados, sem uso de IA. O cadastro legado é tratado como evidência, não como verdade.</li>
+    <li>Dossiê do estabelecimento: fatos sobre quem vende (segmento, produção própria, fornecimento de refeições), com origem registrada.</li>
+    <li>Identificação de cada item (o que ele é e qual NCM/NBS o descreve), por busca na tabela oficial e julgamento por IA restrito aos códigos oficiais; segundo parecer independente nos casos de dúvida.</li>
+    <li>Investigação jurídica por família (mesmo código, cenário, dossiê e data): hipóteses de enquadramento em ordem de precedência, cada uma com condições, exceções e fundamento citado da base normativa versionada. A IA só pode escolher cClassTrib da tabela oficial.</li>
+    <li>Aplicação das hipóteses aos fatos de cada item. Fatos só são aceitos com origem (pessoa, ERP, cadastro ou texto explícito da descrição); suposições viram perguntas.</li>
+    <li>Perguntas feitas apenas quando a resposta muda o enquadramento, no escopo mais amplo possível (empresa, categoria, família).</li>
+    <li>Confiança explicada por dimensão (identificação, código, contexto, regra, condições, exceções, cClassTrib, fonte, conflito, Imposto Seletivo). Somente itens aprovados (por revisor ou automaticamente, com todas as dimensões confirmadas) constam da exportação final.</li>
   </ol>
-  <p class="nota">Modelos: {{ configuracao.get('modelo_principal', '—') }} (julgamento) e {{ configuracao.get('modelo_escalonamento', '—') }} (escalonamento). Limites de confiança: Confirmado ≥ {{ configuracao.get('limiar_confirmado', '—') }}, Corrigido ≥ {{ configuracao.get('limiar_corrigido', '—') }}. Custo de IA registrado: US$ {{ '%.2f'|format(custo) }} ({{ tokens.get('chamadas', 0)|num }} chamadas).</p>
+  <p class="nota">Modelos: {{ configuracao.get('modelo_principal', '—') }} (identificação), {{ configuracao.get('modelo_escalonamento', '—') }} (segundo parecer), {{ configuracao.get('modelo_investigacao', '—') }} (investigação jurídica). Aprovação automática: {{ 'ativada' if configuracao.get('aprovacao_automatica') else 'desativada' }}. Custo de IA registrado: US$ {{ '%.2f'|format(custo) }} ({{ tokens.get('chamadas', 0)|num }} chamadas).</p>
+  <p class="nota">Período da reforma na vigência: {{ transicao.resumo }} ({{ transicao.dispositivos }}).</p>
 
   <h2>Base legal e tabelas oficiais utilizadas</h2>
   <table>

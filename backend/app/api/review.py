@@ -101,7 +101,7 @@ class EdicaoIn(BaseModel):
 async def editar(item_id: uuid.UUID, dados: EdicaoIn, principal: Revisar, session: SessionDep) -> DecisaoOut:
     await _item(session, principal, item_id)
 
-    def _f(s: Session) -> AuditItem:
+    def _f(s: Session) -> tuple[AuditItem, bool]:
         return service.editar(
             s,
             item_id,
@@ -115,7 +115,17 @@ async def editar(item_id: uuid.UUID, dados: EdicaoIn, principal: Revisar, sessio
             aprovar_em_seguida=dados.aprovar,
         )
 
-    i = await session.run_sync(_f)
+    i, reprocessar_item = await session.run_sync(_f)
+    if reprocessar_item:
+        a = await session.get(Audit, i.audit_id)
+        assert a is not None
+        if a.status == StatusAuditoria.CONCLUIDA:
+            a.status = StatusAuditoria.PROCESSANDO
+        a.modo = "tempo_real"
+        await session.commit()
+        celery_app.send_task(
+            "auditoria.processar_itens", args=[str(a.id), str(a.org_id), [str(item_id)]], queue="pipeline"
+        )
     await registrar(
         session,
         principal,
@@ -129,7 +139,12 @@ async def editar(item_id: uuid.UUID, dados: EdicaoIn, principal: Revisar, sessio
             "aprovado": dados.aprovar,
         },
     )
-    return _out(i, "Aprovado" if dados.aprovar else "Alteração salva")
+    msg = (
+        "Código corrigido: o item será reanalisado"
+        if reprocessar_item
+        else ("Aprovado" if dados.aprovar else "Alteração salva")
+    )
+    return _out(i, msg)
 
 
 class RejeicaoIn(BaseModel):
@@ -156,12 +171,15 @@ async def desfazer(item_id: uuid.UUID, principal: Revisar, session: SessionDep) 
 async def reprocessar(item_id: uuid.UUID, principal: Revisar, session: SessionDep) -> DecisaoOut:
     i = await _item(session, principal, item_id)
     a = await session.get(Audit, i.audit_id)
-    if i.revisao_status == StatusRevisao.APROVADO:
+    if i.revisao_status == StatusRevisao.APROVADO and not i.aprovado_automaticamente:
         raise Conflito("Desfaça a aprovação antes de reprocessar o item.")
+    if i.revisao_status == StatusRevisao.APROVADO:
+        i.revisao_status = StatusRevisao.PENDENTE
     if a is None or a.status not in (StatusAuditoria.CONCLUIDA, StatusAuditoria.PROCESSANDO):
         raise Conflito("Só é possível reprocessar itens de auditorias em andamento ou concluídas.")
     i.tentativa += 1
     i.status, i.etapa, i.motivos, i.perguntas = StatusItem.PENDENTE, None, [], []
+    i.aprovado_automaticamente = False
     if a.status == StatusAuditoria.CONCLUIDA:
         a.status = StatusAuditoria.PROCESSANDO
     # Reprocessamentos individuais usam sempre a API em tempo real.
@@ -182,7 +200,7 @@ async def reprocessar(item_id: uuid.UUID, principal: Revisar, session: SessionDe
 # ================================================================================== lote ==
 class LoteIn(BaseModel):
     status: list[str] | None = None
-    confianca_min: float | None = Field(None, ge=0, le=1)
+    confianca: list[str] | None = None
     motivos_excluir: list[str] | None = None
     item_ids: list[uuid.UUID] | None = None
     comentario: str | None = Field(None, max_length=2000)
@@ -203,7 +221,7 @@ async def aprovar_lote(audit_id: uuid.UUID, dados: LoteIn, principal: Revisar, s
     await _carregar_auditoria(session, principal, audit_id)
     filtro = service.FiltroLote(
         status=dados.status,
-        confianca_min=dados.confianca_min,
+        confianca=dados.confianca,
         motivos_excluir=dados.motivos_excluir,
         item_ids=dados.item_ids,
     )
@@ -214,7 +232,7 @@ async def aprovar_lote(audit_id: uuid.UUID, dados: LoteIn, principal: Revisar, s
             "descricao": i.descricao,
             "codigo": i.codigo_sugerido,
             "cclasstrib": i.cclasstrib_sugerido,
-            "confianca": float(i.confianca or 0),
+            "confianca": i.confianca_global,
         }
         for i in itens[:10]
     ]

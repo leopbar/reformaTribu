@@ -3,12 +3,17 @@
     python -m app.evals.runner --conjunto /evals/conjunto_ouro/exemplo_nao_validado.csv \\
         --config /evals/configs/padrao.yaml [--config /evals/configs/outra.yaml] [--baseline /evals/baseline.json]
 
-Para cada configuração (modelos, esforço, versões de prompt, limiares), roda o pipeline REAL
-(API do Claude, busca híbrida e motor de regras sobre a base de referência vigente) nos itens do
-conjunto-ouro e calcula as métricas. Gera relatório em Markdown e HTML com a comparação lado a
-lado e a curva de calibração do limiar de confirmação.
+Para cada configuração (modelos, esforço, versões de prompt, dossiê), roda o analista REAL (API do
+Claude, busca híbrida, investigação jurídica por família sobre a base normativa vigente) nos itens
+do conjunto-ouro e calcula as métricas. Gera relatório em Markdown e HTML com a comparação lado a
+lado e a distribuição de erros por nível de confiança.
 
-Regressão: com --baseline, termina com código 1 se a taxa de falsos confirmados piorar.
+Métrica principal: falsos classificados — itens que o analista deu como "classificado" (confiança
+alta em todas as dimensões, elegível para aprovação automática) com NCM ou cClassTrib errado.
+Regressão: com --baseline, termina com código 1 se essa taxa piorar.
+
+Coluna opcional `fatos` no conjunto ("atributo=valor;atributo=valor"): fatos do item informados
+antes da análise, como um operador faria ao responder as perguntas.
 
 Os resultados só têm valor se o conjunto-ouro tiver sido validado por um contador (ver
 docs/avaliacao.md). O arquivo de exemplo do repositório NÃO é validado.
@@ -33,9 +38,11 @@ from typing import Any
 import yaml
 from sqlalchemy import func, select
 
+from app.analise import fatos as fatos_mod
 from app.core.codes import normalizar_cclasstrib, normalizar_nbs, normalizar_ncm, somente_digitos
 from app.db.session import TenantContext, sync_tenant_session, tenant_session
 from app.models import Audit, AuditItem, Company, LlmCall, Organization, OrgSettings
+from app.models.enums import EscopoFato, OrigemFato
 from app.pipeline import context as ctx_mod
 from app.pipeline.runner import AGUARDANDO_LOTE, processar_item
 from app.reference.snapshot import criar_ou_obter
@@ -57,6 +64,7 @@ class ItemOuro:
     esperado_status: str | None
     validado_por: str | None
     observacao: str = ""
+    fatos: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -65,7 +73,7 @@ class Resultado:
     status: str
     codigo: str | None
     cclasstrib: str | None
-    confianca: float
+    confianca: str
     escalonado: bool
     custo: float
     segundos: float
@@ -88,12 +96,8 @@ class Resultado:
         return self.acerto8 and self.acerto_cct
 
     @property
-    def falso_confirmado(self) -> bool:
-        return self.status == "confirmado" and not self.correto
-
-    @property
-    def falso_corrigido(self) -> bool:
-        return self.status == "corrigido" and not self.correto
+    def falso_classificado(self) -> bool:
+        return self.status == "classificado" and not self.correto
 
 
 def carregar_conjunto(caminho: Path) -> tuple[list[ItemOuro], bool]:
@@ -119,13 +123,14 @@ def carregar_conjunto(caminho: Path) -> tuple[list[ItemOuro], bool]:
                 esperado_status=(r.get("esperado_status") or None),
                 validado_por=(r.get("validado_por") or None),
                 observacao=r.get("observacao") or "",
+                fatos=dict(par.split("=", 1) for par in (r.get("fatos") or "").split(";") if "=" in par),
             )
         )
         validado = validado and bool(itens[-1].validado_por)
     return itens, validado
 
 
-def _preparar_org() -> tuple[uuid.UUID, uuid.UUID]:
+def _preparar_org(config: dict[str, Any]) -> tuple[uuid.UUID, uuid.UUID]:
     with sync_tenant_session(TenantContext(org_id=None, platform_admin=True)) as s:
         org = s.scalar(select(Organization).where(Organization.nome == "Avaliação (harness)"))
         if org is None:
@@ -148,6 +153,18 @@ def _preparar_org() -> tuple[uuid.UUID, uuid.UUID]:
             )
             s.add(emp)
             s.flush()
+        emp.segmento = config.get("segmento", "supermercado")
+        for atributo, valor in (config.get("dossie") or {}).items():
+            fatos_mod.registrar(
+                s,
+                org_id=org_id,
+                company_id=emp.id,
+                escopo=EscopoFato.EMPRESA,
+                atributo=atributo,
+                valor_=str(valor),
+                origem=OrigemFato.USUARIO,
+                evidencia="configuração da avaliação",
+            )
         return org_id, emp.id
 
 
@@ -157,7 +174,7 @@ async def _snapshot(org_id: uuid.UUID) -> uuid.UUID:
 
 
 def rodar(conjunto: list[ItemOuro], config: dict[str, Any]) -> list[Resultado]:
-    org_id, emp_id = _preparar_org()
+    org_id, emp_id = _preparar_org(config)
     snap = asyncio.run(_snapshot(org_id))
     aid = uuid.uuid4()
     configuracao = {k: v for k, v in config.items() if k != "nome"}
@@ -200,6 +217,18 @@ def rodar(conjunto: list[ItemOuro], config: dict[str, Any]) -> list[Resultado]:
             s.add(item)
             s.flush()
             ids.append(item.id)
+            for atributo, valor in it.fatos.items():
+                fatos_mod.registrar(
+                    s,
+                    org_id=org_id,
+                    company_id=emp_id,
+                    escopo=EscopoFato.ITEM,
+                    item_chave=it.id,
+                    atributo=atributo,
+                    valor_=valor,
+                    origem=OrigemFato.USUARIO,
+                    evidencia="fato do conjunto-ouro",
+                )
     ctx = ctx_mod.carregar_contexto(aid, org_id, forcar=True)
     resultados = []
     for it, iid in zip(conjunto, ids, strict=True):
@@ -219,7 +248,7 @@ def rodar(conjunto: list[ItemOuro], config: dict[str, Any]) -> list[Resultado]:
                     status=i.status if r != AGUARDANDO_LOTE else "pendente",
                     codigo=i.codigo_sugerido,
                     cclasstrib=i.cclasstrib_sugerido,
-                    confianca=float(i.confianca or 0),
+                    confianca=i.confianca_global or "",
                     escalonado=bool(esc),
                     custo=float(custo or Decimal(0)),
                     segundos=dt,
@@ -235,43 +264,35 @@ def rodar(conjunto: list[ItemOuro], config: dict[str, Any]) -> list[Resultado]:
 
 def metricas(res: list[Resultado]) -> dict[str, float]:
     n = len(res) or 1
-    confirmados = [r for r in res if r.status == "confirmado"]
+    classificados = [r for r in res if r.status == "classificado"]
     return {
         "itens": len(res),
         "acerto_ncm_8_digitos": sum(r.acerto8 for r in res) / n,
         "acerto_ncm_4_digitos": sum(r.acerto4 for r in res) / n,
         "acerto_cclasstrib": sum(r.acerto_cct for r in res) / n,
-        "taxa_falsos_confirmados": sum(r.falso_confirmado for r in res) / n,
-        "falsos_confirmados_entre_confirmados": (sum(r.falso_confirmado for r in confirmados) / len(confirmados))
-        if confirmados
+        "taxa_falsos_classificados": sum(r.falso_classificado for r in res) / n,
+        "falsos_entre_classificados": (sum(r.falso_classificado for r in classificados) / len(classificados))
+        if classificados
         else 0.0,
-        "taxa_falsos_corrigidos": sum(r.falso_corrigido for r in res) / n,
-        "taxa_analise_humana": sum(r.status == "analise_humana" for r in res) / n,
+        "taxa_classificados": len(classificados) / n,
+        "taxa_aguardando_informacao": sum(r.status == "aguardando_informacao" for r in res) / n,
+        "taxa_revisao": sum(r.status in ("revisao_contador", "revisao_especialista") for r in res) / n,
         "taxa_escalonamento": sum(r.escalonado for r in res) / n,
         "custo_medio_usd": sum(r.custo for r in res) / n,
         "tempo_medio_s": sum(r.segundos for r in res) / n,
     }
 
 
-def curva_calibracao(res: list[Resultado]) -> list[dict[str, float]]:
-    """Para cada limiar de confirmação: cobertura (itens confirmáveis) e falsos confirmados."""
-    pontos = []
-    candidatos = [r for r in res if r.status in ("confirmado", "corrigido") or r.codigo]
-    for limiar in [0.80, 0.85, 0.88, 0.90, 0.92, 0.94, 0.95, 0.96, 0.97, 0.98, 0.99]:
-        acima = [
-            r
-            for r in candidatos
-            if r.confianca >= limiar and r.codigo == (r.ouro.ncm_informado or r.ouro.nbs_informado)
-        ]
-        falsos = sum(not r.correto for r in acima)
-        pontos.append(
-            {
-                "limiar": limiar,
-                "cobertura": len(acima) / (len(res) or 1),
-                "falsos_confirmados": falsos / (len(res) or 1),
-            }
-        )
-    return pontos
+def por_confianca(res: list[Resultado]) -> list[dict[str, Any]]:
+    """Para cada nível de confiança global: quantos itens e quantos errados."""
+    saida = []
+    for nivel in ("alta", "media", "incompleta", "baixa", ""):
+        grupo = [r for r in res if r.confianca == nivel]
+        if grupo:
+            saida.append(
+                {"nivel": nivel or "sem resultado", "itens": len(grupo), "errados": sum(not r.correto for r in grupo)}
+            )
+    return saida
 
 
 ROTULOS = {
@@ -279,10 +300,11 @@ ROTULOS = {
     "acerto_ncm_8_digitos": "Acerto NCM/NBS (8/9 dígitos)",
     "acerto_ncm_4_digitos": "Acerto NCM (posição, 4 dígitos)",
     "acerto_cclasstrib": "Acerto cClassTrib",
-    "taxa_falsos_confirmados": "Falsos confirmados (principal)",
-    "falsos_confirmados_entre_confirmados": "Falsos confirmados / confirmados",
-    "taxa_falsos_corrigidos": "Falsos corrigidos",
-    "taxa_analise_humana": "Enviados à análise humana",
+    "taxa_falsos_classificados": "Falsos classificados (principal)",
+    "falsos_entre_classificados": "Falsos classificados / classificados",
+    "taxa_classificados": "Classificados (confiança alta)",
+    "taxa_aguardando_informacao": "Aguardando informação",
+    "taxa_revisao": "Enviados à revisão",
     "taxa_escalonamento": "Escalonados",
     "custo_medio_usd": "Custo médio por item (US$)",
     "tempo_medio_s": "Tempo médio por item (s)",
@@ -333,13 +355,13 @@ def relatorio(
             yaml.safe_dump(cfg, allow_unicode=True).strip(),
             "```",
             "",
-            "### Calibração do limiar de confirmação",
+            "### Erros por nível de confiança",
             "",
-            "| Limiar | Cobertura | Falsos confirmados |",
+            "| Confiança | Itens | Errados |",
             "|---|---|---|",
         ]
-        for p in curva_calibracao(res):
-            md.append(f"| {p['limiar']:.2f} | {p['cobertura'] * 100:.1f}% | {p['falsos_confirmados'] * 100:.1f}% |")
+        for p in por_confianca(res):
+            md.append(f"| {p['nivel']} | {p['itens']} | {p['errados']} |")
         md += [
             "",
             "### Erros",
@@ -349,7 +371,7 @@ def relatorio(
         ]
         for r in res:
             if not r.correto or r.status != (r.ouro.esperado_status or r.status):
-                alerta = " ⚠ FALSO CONFIRMADO" if r.falso_confirmado else ""
+                alerta = " ⚠ FALSO CLASSIFICADO" if r.falso_classificado else ""
                 esperado = f"{r.ouro.esperado_codigo} / {r.ouro.esperado_cclasstrib or '—'}"
                 obtido = f"{r.codigo or '—'} / {r.cclasstrib or '—'}"
                 md.append(
@@ -417,13 +439,14 @@ def main() -> int:
             print(f"Baseline gravado em {a.baseline}")
         else:
             ref = json.loads(a.baseline.read_text(encoding="utf-8"))["metricas"]
-            if principal["taxa_falsos_confirmados"] > ref["taxa_falsos_confirmados"] + 1e-9:
+            chave = "taxa_falsos_classificados"
+            if principal[chave] > ref.get(chave, 1.0) + 1e-9:
                 print(
-                    f"REGRESSÃO: falsos confirmados {principal['taxa_falsos_confirmados']:.3%} > baseline "
-                    f"{ref['taxa_falsos_confirmados']:.3%}. A mudança não deve entrar."
+                    f"REGRESSÃO: falsos classificados {principal[chave]:.3%} > baseline "
+                    f"{ref.get(chave, 1.0):.3%}. A mudança não deve entrar."
                 )
                 return 1
-            print("Sem regressão na taxa de falsos confirmados.")
+            print("Sem regressão na taxa de falsos classificados.")
     return 0
 
 

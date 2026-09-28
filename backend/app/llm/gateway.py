@@ -72,8 +72,16 @@ class RequisicaoLLM:
                     "content": orjson.dumps(self.conteudo_usuario, option=orjson.OPT_SORT_KEYS).decode(),
                 }
             ],
-            "output_config": {"format": {"type": "json_schema", "schema": self.schema}, "effort": self.esforco},
+            "output_config": {
+                "format": {"type": "json_schema", "schema": self.schema},
+                **({"effort": self.esforco} if suporta_esforco(self.modelo) else {}),
+            },
         }
+
+
+def suporta_esforco(modelo: str) -> bool:
+    """O parâmetro `effort` não existe nos modelos Haiku (a API recusa a requisição)."""
+    return "haiku" not in modelo
 
 
 @dataclass
@@ -238,6 +246,8 @@ def chamar_tempo_real(req: RequisicaoLLM) -> ResultadoLLM:
         time.sleep(espera)
 
     latencia = int((time.perf_counter() - inicio) * 1000)
+    # A falha é gravada ANTES de ser propagada (uma exceção dentro da sessão desfaria o registro).
+    falha: FalhaIA | None = None
     with _sessao(req) as sess:
         call = sess.get(LlmCall, call_id)
         assert call is not None
@@ -246,17 +256,21 @@ def chamar_tempo_real(req: RequisicaoLLM) -> ResultadoLLM:
         if mensagem is None:
             call.status = StatusChamadaLLM.FALHOU
             call.erro = f"{type(ultimo_erro).__name__}: {str(ultimo_erro)[:500]}"
-            raise FalhaIA("Não foi possível obter resposta do modelo após várias tentativas.") from ultimo_erro
-        call.request_id = mensagem.get("_request_id")
-        registrar_resposta(call, mensagem, lote=False)
-        try:
-            dados = validar_resposta(req, mensagem)
-        except FalhaIA as e:
-            call.status = StatusChamadaLLM.FALHOU
-            call.erro = str(e)[:1000]
-            raise
-        call.status = StatusChamadaLLM.CONCLUIDA
-        return ResultadoLLM(dados, call.id, Decimal(call.custo_usd), False, req.modelo, req.prompt.rotulo)
+            falha = FalhaIA("Não foi possível obter resposta do modelo após várias tentativas.")
+        else:
+            call.request_id = mensagem.get("_request_id")
+            registrar_resposta(call, mensagem, lote=False)
+            try:
+                dados = validar_resposta(req, mensagem)
+                call.status = StatusChamadaLLM.CONCLUIDA
+                resultado = ResultadoLLM(dados, call.id, Decimal(call.custo_usd), False, req.modelo, req.prompt.rotulo)
+            except FalhaIA as e:
+                call.status = StatusChamadaLLM.FALHOU
+                call.erro = str(e)[:1000]
+                falha = e
+    if falha is not None:
+        raise falha from ultimo_erro
+    return resultado
 
 
 def enfileirar_lote(req: RequisicaoLLM) -> uuid.UUID:

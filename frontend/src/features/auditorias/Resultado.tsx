@@ -13,11 +13,11 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, ok } from "@/api/client";
 import { useAuth } from "@/auth/auth";
-import { Confianca, EstadoErro, EstadoVazio, mensagemErro, SeloStatus, STATUS } from "@/components/dominio";
+import { CONFIANCA, ConfiancaGlobal, EstadoErro, EstadoVazio, mensagemErro, SeloStatus, STATUS } from "@/components/dominio";
 import { Aviso, Button, Dialog, DialogContent, Input, Painel, Select, Skeleton } from "@/components/ui/primitives";
 import { fmtCodigo, fmtNum, fmtPct } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { useItens, type Auditoria, type LinhaItem } from "./comum";
+import { TRATAMENTO, useItens, type Auditoria, type LinhaItem } from "./comum";
 import { DetalheItem } from "./DetalheItem";
 
 const col = createColumnHelper<LinhaItem>();
@@ -26,14 +26,14 @@ export interface Filtros {
   busca: string;
   status: string[];
   motivo: string;
-  confiancaMax: string;
-  anexo: string;
+  confianca: string;
+  tratamento: string;
   capitulo: string;
   revisao: string;
-  agrupar: "" | "status" | "capitulo" | "anexo" | "motivo";
+  agrupar: "" | "status" | "capitulo" | "tratamento" | "motivo" | "categoria";
 }
 
-export const FILTROS_INICIAIS: Filtros = { busca: "", status: [], motivo: "", confiancaMax: "", anexo: "", capitulo: "", revisao: "", agrupar: "" };
+export const FILTROS_INICIAIS: Filtros = { busca: "", status: [], motivo: "", confianca: "", tratamento: "", capitulo: "", revisao: "", agrupar: "" };
 
 export function filtrarItens(itens: LinhaItem[], f: Filtros): LinhaItem[] {
   const termo = f.busca.trim().toLowerCase();
@@ -41,10 +41,11 @@ export function filtrarItens(itens: LinhaItem[], f: Filtros): LinhaItem[] {
   return itens.filter((i) => {
     if (f.status.length && !f.status.includes(i.status)) return false;
     if (f.motivo && !i.motivos.includes(f.motivo)) return false;
-    if (f.revisao && i.revisao_status !== f.revisao) return false;
-    if (f.anexo && (i.anexo ?? "sem") !== f.anexo) return false;
+    if (f.revisao === "automatico" && !(i.revisao_status === "aprovado" && i.aprovado_automaticamente)) return false;
+    if (f.revisao && f.revisao !== "automatico" && i.revisao_status !== f.revisao) return false;
+    if (f.tratamento && (i.tratamento ?? "sem") !== f.tratamento) return false;
     if (f.capitulo && (i.codigo_sugerido ?? i.codigo_atual ?? "").slice(0, 2) !== f.capitulo) return false;
-    if (f.confiancaMax && (i.confianca ?? 0) >= Number(f.confiancaMax)) return false;
+    if (f.confianca && i.confianca_global !== f.confianca) return false;
     if (termo) {
       const alvo = `${i.descricao} ${i.codigo_interno}`.toLowerCase();
       const codigos = `${i.codigo_atual ?? ""} ${i.codigo_sugerido ?? ""} ${i.cclasstrib_sugerido ?? ""}`;
@@ -53,6 +54,9 @@ export function filtrarItens(itens: LinhaItem[], f: Filtros): LinhaItem[] {
     return true;
   });
 }
+
+const ORDEM_CONFIANCA: Record<string, number> = { baixa: 0, incompleta: 1, media: 2, alta: 3 };
+const ordemConfianca = (v: string | null) => (v ? ORDEM_CONFIANCA[v] ?? -1 : -1);
 
 type Linha = { tipo: "grupo"; chave: string; rotulo: string; n: number } | { tipo: "item"; item: LinhaItem; indice: number };
 
@@ -91,15 +95,32 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
           return <span className={cn("codigo text-xs", mudou && "font-medium text-caneta")}>{fmtCodigo(i.tipo_codigo, c.getValue())}</span>;
         },
       }),
-      col.accessor("cclasstrib_sugerido", { header: "cClassTrib", size: 96, cell: (c) => <span className="codigo text-xs">{c.getValue() ?? "—"}</span> }),
-      col.accessor("confianca", { header: "Confiança", size: 110, sortUndefined: "last", cell: (c) => <Confianca valor={c.getValue()} /> }),
-      col.accessor("status", { header: "Resultado", size: 150, cell: (c) => <SeloStatus status={c.getValue()} /> }),
+      col.accessor("cclasstrib_sugerido", {
+        header: "cClassTrib",
+        size: 104,
+        cell: (c) => (
+          <span className="codigo text-xs">
+            {c.getValue() ?? "—"}
+            {c.row.original.imposto_seletivo === "sujeito" ? <span className="ml-1 font-sans text-2xs text-ocre">+IS</span> : null}
+          </span>
+        ),
+      }),
+      col.accessor("confianca_global", {
+        header: "Confiança",
+        size: 110,
+        sortingFn: (a, b) => ordemConfianca(a.original.confianca_global) - ordemConfianca(b.original.confianca_global),
+        cell: (c) => <ConfiancaGlobal valor={c.getValue()} />,
+      }),
+      col.accessor("status", { header: "Resultado", size: 190, cell: (c) => <SeloStatus status={c.getValue()} /> }),
       col.accessor("revisao_status", {
         header: "Revisão",
         size: 100,
         cell: (c) =>
           c.getValue() === "aprovado" ? (
-            <span className="inline-flex items-center gap-1 text-2xs font-semibold text-conferido"><Stamp className="size-3.5" aria-hidden />Aprovado</span>
+            <span className="inline-flex items-center gap-1 text-2xs font-semibold text-conferido">
+              <Stamp className="size-3.5" aria-hidden />
+              {c.row.original.aprovado_automaticamente ? "Automático" : "Aprovado"}
+            </span>
           ) : c.getValue() === "rejeitado" ? (
             <span className="text-2xs text-perigo">Rejeitado</span>
           ) : (
@@ -135,7 +156,8 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
     if (!f.agrupar) return linhasOrdenadas.map((item, indice) => ({ tipo: "item", item, indice }));
     const chaveDe = (i: LinhaItem): [string, string] => {
       if (f.agrupar === "status") return [i.status, STATUS[i.status as keyof typeof STATUS]?.rotulo ?? i.status];
-      if (f.agrupar === "anexo") return [i.anexo ?? "sem", i.anexo ? `Anexo ${i.anexo}` : "Sem anexo (tributação integral ou indefinido)"];
+      if (f.agrupar === "tratamento") return [i.tratamento ?? "sem", i.tratamento ? TRATAMENTO[i.tratamento] ?? i.tratamento : "Sem enquadramento definido"];
+      if (f.agrupar === "categoria") return [i.categoria ?? "", i.categoria ? `Categoria “${i.categoria}”` : "Sem categoria no ERP"];
       if (f.agrupar === "motivo") return [i.motivos[0] ?? "nenhum", i.motivos[0] ? textos[i.motivos[0]]?.[0] ?? i.motivos[0] : "Sem motivo"];
       const cap = (i.codigo_sugerido ?? i.codigo_atual ?? "").slice(0, 2) || "--";
       return [cap, `Capítulo ${cap}`];
@@ -188,18 +210,20 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
   const contagem = useMemo(() => {
     const c: Record<string, number> = {};
     const m: Record<string, number> = {};
-    const anexos = new Set<string>();
+    const tratamentos = new Set<string>();
     const caps = new Set<string>();
     let aprovados = 0;
+    let automaticos = 0;
     for (const i of todos) {
       c[i.status] = (c[i.status] ?? 0) + 1;
       for (const x of i.motivos) m[x] = (m[x] ?? 0) + 1;
-      anexos.add(i.anexo ?? "sem");
+      tratamentos.add(i.tratamento ?? "sem");
       const cap = (i.codigo_sugerido ?? i.codigo_atual ?? "").slice(0, 2);
       if (cap) caps.add(cap);
       if (i.revisao_status === "aprovado") aprovados++;
+      if (i.revisao_status === "aprovado" && i.aprovado_automaticamente) automaticos++;
     }
-    return { c, m, anexos: [...anexos].sort(), caps: [...caps].sort(), aprovados };
+    return { c, m, tratamentos: [...tratamentos].sort(), caps: [...caps].sort(), aprovados, automaticos };
   }, [todos]);
 
   if (itens.isError) return <EstadoErro erro={itens.error} aoTentar={() => void itens.refetch()} />;
@@ -212,8 +236,8 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
   return (
     <div className="grid gap-4">
       {/* Resumo: os totais também são filtros */}
-      <div className="grid gap-3 lg:grid-cols-[repeat(3,minmax(0,1fr))_minmax(0,1.3fr)]">
-        {(["confirmado", "corrigido", "analise_humana"] as const).map((s) => {
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[repeat(4,minmax(0,1fr))_minmax(0,1.3fr)]">
+        {(["classificado", "aguardando_informacao", "revisao_contador", "revisao_especialista"] as const).map((s) => {
           const S = STATUS[s];
           const I = S.icone;
           const ativo = f.status.includes(s);
@@ -228,7 +252,7 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
           );
         })}
         <Painel className="px-4 py-3">
-          <p className="text-xs text-tinta-3">Principais motivos de análise</p>
+          <p className="text-xs text-tinta-3">Principais motivos</p>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {Object.entries(contagem.m)
               .sort((a, b) => b[1] - a[1])
@@ -241,6 +265,7 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
           </div>
           <p className="mt-2 text-2xs text-tinta-3">
             Revisão: <span className="num font-medium text-tinta">{fmtNum(contagem.aprovados)}</span> de <span className="num">{fmtNum(todos.length)}</span> aprovados
+            {contagem.automaticos ? <> (<span className="num">{fmtNum(contagem.automaticos)}</span> automaticamente)</> : null}
           </p>
         </Painel>
       </div>
@@ -252,11 +277,11 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
           <Input value={f.busca} onChange={(e) => setF((x) => ({ ...x, busca: e.target.value }))} placeholder="Buscar descrição, código ou NCM" className="pl-8" aria-label="Buscar itens" />
         </div>
         <Select aria-label="Filtrar por motivo" className="w-56" valor={f.motivo || "_"} aoMudar={(v) => setF((x) => ({ ...x, motivo: v === "_" ? "" : v }))} opcoes={[{ valor: "_", rotulo: "Todos os motivos" }, ...Object.keys(contagem.m).map((m) => ({ valor: m, rotulo: textos[m]?.[0] ?? m }))]} />
-        <Select aria-label="Filtrar por confiança" className="w-44" valor={f.confiancaMax || "_"} aoMudar={(v) => setF((x) => ({ ...x, confiancaMax: v === "_" ? "" : v }))} opcoes={[{ valor: "_", rotulo: "Qualquer confiança" }, { valor: "0.9", rotulo: "Abaixo de 90%" }, { valor: "0.75", rotulo: "Abaixo de 75%" }, { valor: "0.5", rotulo: "Abaixo de 50%" }]} />
-        <Select aria-label="Filtrar por anexo" className="w-40" valor={f.anexo || "_"} aoMudar={(v) => setF((x) => ({ ...x, anexo: v === "_" ? "" : v }))} opcoes={[{ valor: "_", rotulo: "Todos os anexos" }, ...contagem.anexos.map((a) => ({ valor: a, rotulo: a === "sem" ? "Sem anexo" : `Anexo ${a}` }))]} />
+        <Select aria-label="Filtrar por confiança" className="w-44" valor={f.confianca || "_"} aoMudar={(v) => setF((x) => ({ ...x, confianca: v === "_" ? "" : v }))} opcoes={[{ valor: "_", rotulo: "Qualquer confiança" }, ...Object.entries(CONFIANCA).map(([k, c]) => ({ valor: k, rotulo: `Confiança ${c.rotulo.toLowerCase()}` }))]} />
+        <Select aria-label="Filtrar por tratamento" className="w-52" valor={f.tratamento || "_"} aoMudar={(v) => setF((x) => ({ ...x, tratamento: v === "_" ? "" : v }))} opcoes={[{ valor: "_", rotulo: "Todo tratamento" }, ...contagem.tratamentos.map((a) => ({ valor: a, rotulo: a === "sem" ? "Sem enquadramento" : TRATAMENTO[a] ?? a }))]} />
         <Select aria-label="Filtrar por capítulo" className="w-40" valor={f.capitulo || "_"} aoMudar={(v) => setF((x) => ({ ...x, capitulo: v === "_" ? "" : v }))} opcoes={[{ valor: "_", rotulo: "Todos os capítulos" }, ...contagem.caps.map((c) => ({ valor: c, rotulo: `Capítulo ${c}` }))]} />
-        <Select aria-label="Filtrar por revisão" className="w-40" valor={f.revisao || "_"} aoMudar={(v) => setF((x) => ({ ...x, revisao: v === "_" ? "" : v }))} opcoes={[{ valor: "_", rotulo: "Toda revisão" }, { valor: "pendente", rotulo: "Pendentes" }, { valor: "aprovado", rotulo: "Aprovados" }, { valor: "rejeitado", rotulo: "Rejeitados" }]} />
-        <Select aria-label="Agrupar" className="w-40" valor={f.agrupar || "_"} aoMudar={(v) => setF((x) => ({ ...x, agrupar: (v === "_" ? "" : v) as Filtros["agrupar"] }))} opcoes={[{ valor: "_", rotulo: "Sem agrupar" }, { valor: "status", rotulo: "Agrupar: resultado" }, { valor: "anexo", rotulo: "Agrupar: anexo" }, { valor: "capitulo", rotulo: "Agrupar: capítulo" }, { valor: "motivo", rotulo: "Agrupar: motivo" }]} />
+        <Select aria-label="Filtrar por revisão" className="w-40" valor={f.revisao || "_"} aoMudar={(v) => setF((x) => ({ ...x, revisao: v === "_" ? "" : v }))} opcoes={[{ valor: "_", rotulo: "Toda revisão" }, { valor: "pendente", rotulo: "Pendentes" }, { valor: "aprovado", rotulo: "Aprovados" }, { valor: "automatico", rotulo: "Aprovados automaticamente" }, { valor: "rejeitado", rotulo: "Rejeitados" }]} />
+        <Select aria-label="Agrupar" className="w-40" valor={f.agrupar || "_"} aoMudar={(v) => setF((x) => ({ ...x, agrupar: (v === "_" ? "" : v) as Filtros["agrupar"] }))} opcoes={[{ valor: "_", rotulo: "Sem agrupar" }, { valor: "status", rotulo: "Agrupar: resultado" }, { valor: "tratamento", rotulo: "Agrupar: tratamento" }, { valor: "categoria", rotulo: "Agrupar: categoria do ERP" }, { valor: "capitulo", rotulo: "Agrupar: capítulo" }, { valor: "motivo", rotulo: "Agrupar: motivo" }]} />
         {JSON.stringify(f) !== JSON.stringify(FILTROS_INICIAIS) ? (
           <Button variant="fantasma" tamanho="sm" onClick={() => setF(FILTROS_INICIAIS)}>
             Limpar filtros
@@ -336,10 +361,14 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
 
 function AprovacaoLote({ aberto, aoFechar, auditId }: { aberto: boolean; aoFechar: () => void; auditId: string }) {
   const qc = useQueryClient();
-  const [status, setStatus] = useState("confirmado");
-  const [conf, setConf] = useState("0.95");
+  const [status, setStatus] = useState("revisao_contador");
+  const [conf, setConf] = useState("media");
   const [previa, setPrevia] = useState<{ total: number; amostra: Record<string, unknown>[] } | null>(null);
-  const corpo = { status: status === "todos" ? ["confirmado", "corrigido"] : [status], confianca_min: Number(conf), motivos_excluir: ["SUJEITO_A_IMPOSTO_SELETIVO"] };
+  const corpo = {
+    status: status === "todos" ? ["classificado", "revisao_contador"] : [status],
+    confianca: conf === "alta" ? ["alta"] : ["alta", "media"],
+    motivos_excluir: ["SUJEITO_A_IMPOSTO_SELETIVO", "CONFLITO_NORMATIVO"],
+  };
   const ver = useMutation({
     mutationFn: () => ok(api.POST("/api/auditorias/{audit_id}/aprovar-lote", { params: { path: { audit_id: auditId } }, body: { ...corpo, confirmar: false } })),
     onSuccess: (r) => setPrevia({ total: r.total, amostra: r.amostra }),
@@ -369,10 +398,10 @@ function AprovacaoLote({ aberto, aoFechar, auditId }: { aberto: boolean; aoFecha
   }, [aberto, status, conf]);
   return (
     <Dialog open={aberto} onOpenChange={(o) => !o && aoFechar()}>
-      <DialogContent titulo="Aprovar em lote" descricao="Aprova de uma vez itens com classificação completa, sem perguntas pendentes. Itens sujeitos ao Imposto Seletivo ficam de fora.">
+      <DialogContent titulo="Aprovar em lote" descricao="Aprova de uma vez itens com classificação completa e sem perguntas pendentes. Ficam de fora os itens sujeitos ao Imposto Seletivo e os que têm conflito entre fontes.">
         <div className="grid grid-cols-2 gap-3">
-          <Select aria-label="Resultado" valor={status} aoMudar={setStatus} opcoes={[{ valor: "confirmado", rotulo: "Confirmados" }, { valor: "corrigido", rotulo: "Corrigidos" }, { valor: "todos", rotulo: "Confirmados e corrigidos" }]} />
-          <Select aria-label="Confiança mínima" valor={conf} aoMudar={setConf} opcoes={[{ valor: "0.98", rotulo: "Confiança ≥ 98%" }, { valor: "0.95", rotulo: "Confiança ≥ 95%" }, { valor: "0.9", rotulo: "Confiança ≥ 90%" }]} />
+          <Select aria-label="Resultado" valor={status} aoMudar={setStatus} opcoes={[{ valor: "revisao_contador", rotulo: "Em revisão do contador" }, { valor: "classificado", rotulo: "Classificados (não aprovados)" }, { valor: "todos", rotulo: "Os dois" }]} />
+          <Select aria-label="Confiança" valor={conf} aoMudar={setConf} opcoes={[{ valor: "alta", rotulo: "Só confiança alta" }, { valor: "media", rotulo: "Confiança alta ou média" }]} />
         </div>
         {previa ? (
           <Aviso tom={previa.total ? "info" : "atencao"} titulo={`${fmtNum(previa.total)} itens serão aprovados`}>

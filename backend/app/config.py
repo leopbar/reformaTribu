@@ -44,12 +44,16 @@ class Settings(BaseSettings):
 
     # Anthropic. A chave só existe no servidor.
     anthropic_api_key: SecretStr | None = Field(None, alias="ANTHROPIC_API_KEY")
-    llm_model_primary: str = Field("claude-sonnet-5", alias="LLM_MODEL_PRIMARY")
-    llm_model_escalation: str = Field("claude-opus-5-5", alias="LLM_MODEL_ESCALATION")
+    llm_model_primary: str = Field("claude-haiku-4-5-20251001", alias="LLM_MODEL_PRIMARY")
+    llm_model_escalation: str = Field("claude-sonnet-5", alias="LLM_MODEL_ESCALATION")
     llm_model_light: str = Field("claude-haiku-4-5-20251001", alias="LLM_MODEL_LIGHT")
     llm_effort_primary: Literal["low", "medium", "high", "xhigh", "max"] = Field("medium", alias="LLM_EFFORT_PRIMARY")
-    llm_effort_escalation: Literal["low", "medium", "high", "xhigh", "max"] = Field(
-        "high", alias="LLM_EFFORT_ESCALATION"
+    llm_effort_escalation: Literal["low", "medium", "medium", "xhigh", "max"] = Field(
+        "medium", alias="LLM_EFFORT_ESCALATION"
+    )
+    # Investigação jurídica por família (modelo de escalonamento): esforço médio equilibra custo e rigor.
+    llm_effort_investigation: Literal["low", "medium", "high", "xhigh", "max"] = Field(
+        "medium", alias="LLM_EFFORT_INVESTIGATION"
     )
     llm_timeout_s: float = Field(120.0, alias="LLM_TIMEOUT_SECONDS")
     llm_max_tentativas: int = Field(5, alias="LLM_MAX_RETRIES")

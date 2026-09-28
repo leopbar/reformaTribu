@@ -19,7 +19,7 @@ describe("régua de conferência", () => {
     expect(screen.getByText("Código conferido.")).toBeInTheDocument();
   });
   it("status nunca só por cor: tem texto", () => {
-    render(<SeloStatus status="analise_humana" />);
-    expect(screen.getByText("Análise humana")).toBeInTheDocument();
+    render(<SeloStatus status="aguardando_informacao" />);
+    expect(screen.getByText("Aguardando informação")).toBeInTheDocument();
   });
 });

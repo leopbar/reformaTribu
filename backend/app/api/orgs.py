@@ -80,6 +80,7 @@ class ConfiguracoesOut(BaseModel):
     alerta_orcamento_pct: int
     lote_min_itens: int | None
     imposto_seletivo_exige_analise: bool
+    aprovacao_automatica: bool
     retencao_arquivos_dias: int
     modelos_disponiveis: list[str]
 
@@ -104,6 +105,7 @@ class ConfiguracoesIn(BaseModel):
     alerta_orcamento_pct: int | None = Field(None, ge=10, le=100)
     lote_min_itens: int | None = Field(None, ge=1)
     imposto_seletivo_exige_analise: bool | None = None
+    aprovacao_automatica: bool | None = None
     retencao_arquivos_dias: int | None = Field(None, ge=0, le=3650)
     nome: str | None = Field(None, min_length=2, max_length=200)
 
@@ -128,6 +130,7 @@ def _config_out(cfg: OrgSettings) -> ConfiguracoesOut:
         alerta_orcamento_pct=cfg.alerta_orcamento_pct,
         lote_min_itens=cfg.lote_min_itens,
         imposto_seletivo_exige_analise=cfg.imposto_seletivo_exige_analise,
+        aprovacao_automatica=cfg.aprovacao_automatica,
         retencao_arquivos_dias=cfg.retencao_arquivos_dias,
         modelos_disponiveis=sorted(MODELOS_SUPORTADOS),
     )

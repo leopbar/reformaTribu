@@ -9,7 +9,7 @@ import { Aviso, Button, Campo, Checkbox, Input, Painel, Select, Skeleton, Textar
 import { fmtCodigo, fmtDataHora, fmtNum, soDigitos } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-const FONTES: Record<string, string> = { ncm: "Tabela NCM", nbs: "Tabela NBS", cclasstrib: "CST e cClassTrib (IBS/CBS)", lc214: "LC 214/2025 (texto e anexos)" };
+const FONTES: Record<string, string> = { ncm: "Tabela NCM", nbs: "Tabela NBS", cclasstrib: "CST e cClassTrib (IBS/CBS)", lc214: "LC 214/2025 (texto e anexos)", normas: "Atos normativos" };
 const STATUS_REGRA: Record<string, { rotulo: string; cor: string }> = {
   pendente_revisao: { rotulo: "Pendente de revisão", cor: "text-ocre" },
   aprovada: { rotulo: "Aprovada", cor: "text-conferido" },
@@ -30,6 +30,14 @@ export function BaseReferenciaPage() {
     },
     onError: (e) => toast.error(mensagemErro(e)),
   });
+  const importarAto = useMutation({
+    mutationFn: (chave: string) => ok(api.POST("/api/referencia/importar-ato", { body: { chave } })),
+    onSuccess: (r) => {
+      toast.success(r.mensagem);
+      setTimeout(() => void qc.invalidateQueries({ queryKey: ["ref-status"] }), 5000);
+    },
+    onError: (e) => toast.error(mensagemErro(e)),
+  });
   const arquivo = useRef<HTMLInputElement>(null);
   const [fonteUpload, setFonteUpload] = useState("ncm");
   const enviar = useMutation({
@@ -46,10 +54,10 @@ export function BaseReferenciaPage() {
   if (!st.data) return <Skeleton className="h-64" />;
   return (
     <>
-      <Cabecalho titulo="Base de referência oficial" subtitulo="Global e compartilhada por todas as organizações. Cada importação cria uma versão nova; nada é sobrescrito." acoes={<Button asChild variant="primario"><Link to="/referencia/regras">Revisar regras legais</Link></Button>} />
-      {!st.data.completa ? <Aviso tom="atencao" titulo="Base incompleta" className="mb-4">Faltando: {st.data.faltando.map((f) => FONTES[f] ?? "regras aprovadas").join(", ")}. Sugestões que dependem delas ficam bloqueadas (vão para análise humana).</Aviso> : null}
+      <Cabecalho titulo="Base normativa e tabelas oficiais" subtitulo="Global e compartilhada por todas as organizações. Cada importação cria uma versão nova com data e hash; nada é sobrescrito. É daqui que o analista cita a lei." acoes={<Button asChild variant="secundario"><Link to="/referencia/regras">Regras curadas (opcional)</Link></Button>} />
+      {!st.data.completa ? <Aviso tom="atencao" titulo="Base incompleta" className="mb-4">Faltando: {st.data.faltando.map((f) => FONTES[f] ?? f).join(", ")}. Sem elas o analista não consegue investigar: os itens vão para revisão do contador.</Aviso> : null}
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        {Object.entries(FONTES).map(([f, rotulo]) => {
+        {Object.entries(FONTES).filter(([f]) => f !== "normas").map(([f, rotulo]) => {
           const v = st.data.fontes[f];
           return (
             <Painel key={f} className="flex flex-col gap-2 p-4">
@@ -59,7 +67,7 @@ export function BaseReferenciaPage() {
                   <p className="text-xs text-tinta-2">{v.rotulo}</p>
                   <p className="text-2xs text-tinta-3">Coletada em {fmtDataHora(v.coletado_em)} ({v.modo_coleta === "download" ? "download" : "envio manual"})</p>
                   <p className="codigo text-2xs text-tinta-3">sha256 {v.sha256.slice(0, 16)}…</p>
-                  {["ncm", "nbs"].includes(f) ? <p className={cn("text-2xs", v.embeddings_status === "concluido" ? "text-conferido" : "text-ocre")}>Busca semântica: {v.embeddings_status === "concluido" ? `pronta (${v.embeddings_modelo})` : v.embeddings_status}</p> : null}
+                  {["ncm", "nbs", "lc214"].includes(f) ? <p className={cn("text-2xs", v.embeddings_status === "concluido" ? "text-conferido" : "text-ocre")}>Busca semântica: {v.embeddings_status === "concluido" ? `pronta (${v.embeddings_modelo})` : v.embeddings_status}</p> : null}
                 </>
               ) : (
                 <p className="text-xs text-perigo">Não importada</p>
@@ -69,11 +77,31 @@ export function BaseReferenciaPage() {
           );
         })}
       </div>
+      <Painel className="mt-6">
+        <h2 className="border-b border-regua px-5 py-3 text-base">Atos normativos da reforma</h2>
+        <p className="px-5 pt-3 text-sm text-tinta-3">Além da LC 214/2025, o analista consulta estes atos (artigos vigentes na data da classificação), com busca por significado.</p>
+        <ul className="divide-y divide-regua">
+          {st.data.atos_normativos.map((a) => (
+            <li key={a.chave} className="flex flex-wrap items-center gap-3 px-5 py-3 text-sm">
+              <span className="min-w-0 flex-1">
+                <span className="font-medium">{a.rotulo}</span> — <span className="text-tinta-2">{a.ementa}</span>
+                <span className="block text-2xs text-tinta-3">
+                  {a.versao ? `Importado em ${fmtDataHora(a.versao.coletado_em)} · busca semântica: ${a.versao.embeddings_status === "concluido" ? "pronta" : a.versao.embeddings_status}` : "Não importado"} ·{" "}
+                  <a href={a.url} target="_blank" rel="noreferrer" className="underline">fonte oficial</a>
+                </span>
+              </span>
+              <Button tamanho="sm" onClick={() => importarAto.mutate(a.chave)} disabled={importarAto.isPending}>
+                <RefreshCw /> {a.versao ? "Atualizar" : "Importar"}
+              </Button>
+            </li>
+          ))}
+        </ul>
+      </Painel>
       <Painel className="mt-6 p-5">
         <h2 className="text-base">Envio manual</h2>
         <p className="mt-1 text-sm text-tinta-3">Use quando o download automático não estiver disponível ou a fonte mudar de formato.</p>
         <div className="mt-3 flex flex-wrap items-center gap-3">
-          <Select aria-label="Fonte" className="w-72" valor={fonteUpload} aoMudar={setFonteUpload} opcoes={Object.entries(FONTES).map(([k, v]) => ({ valor: k, rotulo: v }))} />
+          <Select aria-label="Fonte" className="w-72" valor={fonteUpload} aoMudar={setFonteUpload} opcoes={Object.entries(FONTES).filter(([k]) => k !== "normas").map(([k, v]) => ({ valor: k, rotulo: v }))} />
           <input ref={arquivo} type="file" className="sr-only" onChange={(e) => e.target.files?.[0] && enviar.mutate(e.target.files[0])} />
           <Button onClick={() => arquivo.current?.click()} disabled={enviar.isPending}><Upload /> Enviar arquivo</Button>
         </div>
@@ -139,7 +167,7 @@ export function RegrasPage() {
       <Cabecalho
         voltar={<Link to="/referencia" className="inline-flex items-center gap-1 text-xs text-tinta-3 hover:text-tinta"><ArrowLeft className="size-3.5" /> Base de referência</Link>}
         titulo="Regras legais (LC 214/2025)"
-        subtitulo="Regras pendentes não são usadas em auditorias até serem aprovadas aqui, comparando com o texto legal."
+        subtitulo="Opcional. O analista raciocina a partir do texto legal e das tabelas oficiais; uma regra aprovada aqui vira precedente: aumenta a confiança quando confirma a conclusão e aponta conflito quando diverge."
         acoes={
           <>
             <Button variant="fantasma" onClick={() => void baixarArquivo("/api/regras-yaml", "regras.yaml").catch((e) => toast.error(mensagemErro(e)))}><Download /> Exportar YAML</Button>

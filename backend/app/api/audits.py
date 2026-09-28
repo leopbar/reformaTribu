@@ -43,7 +43,7 @@ from app.models import (
     RefSnapshot,
     UploadedFile,
 )
-from app.models.enums import StatusAuditoria, StatusItem, StatusRevisao
+from app.models.enums import STATUS_REVISAVEIS, StatusAuditoria, StatusRevisao
 from app.pipeline.reasons import TEXTOS
 from app.reference.snapshot import criar_ou_obter
 from app.storage import files
@@ -310,7 +310,7 @@ async def _saida(session: AsyncSession, a: Audit, principal: Principal) -> Audit
             AuditItem.audit_id == a.id,
             AuditItem.ignorado.is_(False),
             AuditItem.revisao_status == StatusRevisao.PENDENTE,
-            AuditItem.status.in_([StatusItem.CONFIRMADO, StatusItem.CORRIGIDO, StatusItem.ANALISE_HUMANA]),
+            AuditItem.status.in_(list(STATUS_REVISAVEIS)),
         )
     )
     cfg = await session.get(OrgSettings, a.org_id)
@@ -408,7 +408,7 @@ async def listar_auditorias(
                         AuditItem.audit_id.in_(ids),
                         AuditItem.ignorado.is_(False),
                         AuditItem.revisao_status == StatusRevisao.PENDENTE,
-                        AuditItem.status.in_([StatusItem.CONFIRMADO, StatusItem.CORRIGIDO, StatusItem.ANALISE_HUMANA]),
+                        AuditItem.status.in_(list(STATUS_REVISAVEIS)),
                     )
                     .group_by(AuditItem.audit_id)
                 )
@@ -507,9 +507,11 @@ async def iniciar_auditoria(
         "modelo_escalonamento": cfg.modelo_escalonamento or s.llm_model_escalation,
         "esforco_principal": s.llm_effort_primary,
         "esforco_escalonamento": s.llm_effort_escalation,
-        "limiar_confirmado": float(cfg.limiar_confirmado or 0.9),
-        "limiar_corrigido": float(cfg.limiar_corrigido or 0.85),
+        "modelo_investigacao": cfg.modelo_escalonamento or s.llm_model_escalation,
+        "modelo_fatos": cfg.modelo_leve or s.llm_model_light,
+        "esforco_investigacao": s.llm_effort_investigation,
         "limiar_escalonamento": float(cfg.limiar_escalonamento or 0.8),
+        "aprovacao_automatica": cfg.aprovacao_automatica,
         "imposto_seletivo_exige_analise": cfg.imposto_seletivo_exige_analise,
         "custo_estimado_confirmado_usd": dados.confirmar_custo_usd,
         "modo": modo,
@@ -557,48 +559,52 @@ CAMPOS_TABELA = [
     "tipo_codigo",
     "status",
     "motivos",
-    "confianca",
+    "confianca_global",
     "revisao_status",
-    "anexo",
+    "tratamento",
     "cclasstrib_sugerido",
     "cst_sugerido",
     "imposto_seletivo",
     "perguntas",
     "origem",
+    "nivel_revisao",
+    "aprovado_automaticamente",
+    "categoria",
+    "hipotese",
 ]
 
 
 @router.get("/auditorias/{audit_id}/itens", response_model=ItensColunares)
 async def listar_itens(audit_id: uuid.UUID, principal: Ver, session: SessionDep) -> ItensColunares:
     await _carregar_auditoria(session, principal, audit_id)
-    q = (
-        select(
-            AuditItem.id,
-            AuditItem.linha,
-            AuditItem.codigo_interno,
-            AuditItem.descricao,
-            AuditItem.tipo,
-            AuditItem.ncm,
-            AuditItem.nbs,
-            AuditItem.ncm_informado,
-            AuditItem.codigo_sugerido,
-            AuditItem.tipo_codigo_sugerido,
-            AuditItem.status,
-            AuditItem.motivos,
-            AuditItem.confianca,
-            AuditItem.revisao_status,
-            LegalRule.anexo,
-            AuditItem.cclasstrib_sugerido,
-            AuditItem.cst_sugerido,
-            AuditItem.imposto_seletivo,
-            func.jsonb_array_length(AuditItem.perguntas).label("n_perguntas"),
-            AuditItem.origem,
-            AuditItem.final_codigo,
-            AuditItem.final_cclasstrib,
-        )
-        .outerjoin(LegalRule, LegalRule.id == AuditItem.regra_id)
-        .where(AuditItem.audit_id == audit_id, AuditItem.ignorado.is_(False))
-    )
+    q = select(
+        AuditItem.id,
+        AuditItem.linha,
+        AuditItem.codigo_interno,
+        AuditItem.descricao,
+        AuditItem.tipo,
+        AuditItem.ncm,
+        AuditItem.nbs,
+        AuditItem.ncm_informado,
+        AuditItem.codigo_sugerido,
+        AuditItem.tipo_codigo_sugerido,
+        AuditItem.status,
+        AuditItem.motivos,
+        AuditItem.confianca_global,
+        AuditItem.revisao_status,
+        AuditItem.tipo_tratamento,
+        AuditItem.cclasstrib_sugerido,
+        AuditItem.cst_sugerido,
+        AuditItem.is_situacao,
+        func.jsonb_array_length(AuditItem.perguntas).label("n_perguntas"),
+        AuditItem.origem,
+        AuditItem.final_codigo,
+        AuditItem.final_cclasstrib,
+        AuditItem.nivel_revisao,
+        AuditItem.aprovado_automaticamente,
+        AuditItem.categoria,
+        AuditItem.hipotese,
+    ).where(AuditItem.audit_id == audit_id, AuditItem.ignorado.is_(False))
     if principal.somente_leitura:
         q = q.where(AuditItem.revisao_status == StatusRevisao.APROVADO)
     rows = (await session.execute(q.order_by(AuditItem.linha))).all()
@@ -618,14 +624,18 @@ async def listar_itens(audit_id: uuid.UUID, principal: Ver, session: SessionDep)
                 tipo_cod,
                 r.status,
                 r.motivos or [],
-                float(r.confianca) if r.confianca is not None else None,
+                r.confianca_global,
                 r.revisao_status,
-                r.anexo,
+                r.tipo_tratamento,
                 r.final_cclasstrib or r.cclasstrib_sugerido,
                 r.cst_sugerido,
-                r.imposto_seletivo,
+                r.is_situacao,
                 r.n_perguntas or 0,
                 r.origem,
+                r.nivel_revisao,
+                r.aprovado_automaticamente,
+                r.categoria,
+                r.hipotese,
             ]
         )
     return ItensColunares(total=len(linhas), campos=CAMPOS_TABELA, linhas=linhas)

@@ -25,7 +25,8 @@ CSV UTF-8 com separador `;`. Linhas iniciadas por `#` são comentários.
 | `esperado_tipo_codigo` | sim | `ncm` ou `nbs` |
 | `esperado_codigo` | sim* | código correto, só dígitos (*vazio quando o correto é análise humana sem código) |
 | `esperado_cst` / `esperado_cclasstrib` | não | enquadramento correto na data de referência |
-| `esperado_status` | não | `confirmado`, `corrigido` ou `analise_humana` |
+| `esperado_status` | não | `classificado`, `aguardando_informacao`, `revisao_contador` ou `revisao_especialista` |
+| `fatos` | não | fatos do item informados antes da análise, como um operador faria: `adicao_acucar=nao;produzido_na_loja=sim` |
 | `validado_por` | sim para uso real | nome e registro (CRC) do contador que validou o caso |
 | `observacao` | não | justificativa ou fonte |
 
@@ -35,11 +36,11 @@ ilustrativo: as respostas foram escritas para testar o harness e não são verda
 ## Métricas
 
 - acerto do NCM em 8 dígitos e em 4 dígitos (posição); acerto do cClassTrib;
-- **taxa de falsos confirmados** (itens marcados como Confirmado que estavam errados) — a principal;
-- falsos corrigidos, taxa de análise humana, taxa de escalonamento, custo e tempo médios por item;
-- curva de calibração: cobertura × falsos confirmados para limiares de 0,80 a 0,99.
+- **taxa de falsos classificados** (itens dados como Classificado — confiança alta em todas as dimensões, elegíveis para aprovação automática — com NCM ou cClassTrib errado) — a principal;
+- taxas de classificados, aguardando informação e revisão; taxa de escalonamento; custo e tempo médios por item;
+- erros por nível de confiança (alta, média, incompleta, baixa): erros devem se concentrar fora da confiança alta.
 
 ## Regressão
 
 `make eval-regressao` compara com `evals/baseline.json` e falha (código 1) se a taxa de falsos
-confirmados piorar. Nenhuma mudança de prompt ou de regra deve entrar nessa situação.
+classificados piorar. Nenhuma mudança de prompt ou de regra deve entrar nessa situação.

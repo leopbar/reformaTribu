@@ -52,6 +52,35 @@ def processar_itens(self: Any, audit_id: str, org_id: str, item_ids: list[str]) 
         raise self.retry(exc=e) from e
 
 
+@celery_app.task(name="analise.reavaliar_itens")
+def reavaliar_itens(org_id: str, item_ids: list[str], motivo: str) -> int:
+    """Reavalia itens depois de um fato novo (resposta, dossiê, tese validada). Não chama a IA."""
+    from app.analise import aplicacao
+
+    n = 0
+    auditorias: set[uuid.UUID] = set()
+    for i in range(0, len(item_ids), 200):
+        with sync_tenant_session(TenantContext.sistema(uuid.UUID(org_id))) as s:
+            for iid in item_ids[i : i + 200]:
+                if aplicacao.reavaliar(s, uuid.UUID(iid), motivo):
+                    n += 1
+            from app.models import AuditItem
+
+            auditorias |= set(
+                s.scalars(
+                    select(AuditItem.audit_id).where(AuditItem.id.in_([uuid.UUID(x) for x in item_ids[i : i + 200]]))
+                )
+            )
+    for a in auditorias:
+        processing.atualizar_contadores(a, uuid.UUID(org_id))
+    return n
+
+
+@celery_app.task(name="analise.atualizar_contadores")
+def atualizar_contadores(audit_id: str, org_id: str) -> None:
+    processing.atualizar_contadores(uuid.UUID(audit_id), uuid.UUID(org_id))
+
+
 @celery_app.task(name="auditoria.recuperar_travados")
 def recuperar_travados() -> int:
     return sum(processing.recuperar_travados(o) for o in _orgs("sys_orgs_com_trabalho"))
@@ -91,7 +120,17 @@ def importar_referencia(
         usuario_id=uuid.UUID(usuario_id) if usuario_id else None,
         usuario_email=usuario_email,
     )
-    if r.get("criada") and fonte in ("ncm", "nbs"):
+    if r.get("criada") and fonte in ("ncm", "nbs", "lc214", "normas"):
+        indexar_embeddings.delay(r["versao_id"])
+    return r
+
+
+@celery_app.task(name="referencia.importar_ato")
+def importar_ato(chave: str, usuario_id: str | None = None, usuario_email: str | None = None) -> dict[str, Any]:
+    r = service.importar_ato(
+        chave, usuario_id=uuid.UUID(usuario_id) if usuario_id else None, usuario_email=usuario_email
+    )
+    if r.get("criada"):
         indexar_embeddings.delay(r["versao_id"])
     return r
 
@@ -139,7 +178,7 @@ def verificar_atualizacoes() -> dict[str, Any]:
         try:
             r = service.importar(fonte)
             resultado[fonte] = "nova_versao" if r["criada"] else "sem_alteracao"
-            if r["criada"] and fonte in ("ncm", "nbs"):
+            if r["criada"] and fonte in ("ncm", "nbs", "lc214", "normas"):
                 indexar_embeddings.delay(r["versao_id"])
         except Exception as e:
             resultado[fonte] = f"indisponivel: {str(e)[:200]}"

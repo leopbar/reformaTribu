@@ -44,6 +44,9 @@ class Acao:
     DADOS_EXPORTADOS = "dados_organizacao_exportados"
     DADOS_EXCLUIDOS = "dados_organizacao_excluidos"
     EXPURGO = "expurgo_arquivos"
+    PERGUNTA_RESPONDIDA = "pergunta_respondida"
+    DOSSIE = "dossie_alterado"
+    TESE_APROVADA = "tese_aprovada"
 
 
 def _registro(

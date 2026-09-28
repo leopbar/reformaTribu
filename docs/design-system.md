@@ -12,14 +12,14 @@ O produto é usado por contadores que conferem milhares de itens. A identidade v
 | Superfície | `#FFFFFF` | `#151C25` | painéis e tabelas |
 | Tinta | `#17202E` | `#E8EBEF` | texto e ações primárias |
 | Régua | `#D6DAD3` | `#2A3441` | linhas e bordas finas |
-| **Conferido** | `#0C6F5C` | `#4FC9A8` | status Confirmado (verde azulado) |
-| **Caneta** | `#2343B5` | `#8AA4FF` | status Corrigido e marcas de correção (azul de caneta esferográfica) |
-| **Ocre** | `#A44D06` | `#F0A45B` | status Análise humana e trechos divergentes |
+| **Conferido** | `#0C6F5C` | `#4FC9A8` | status Classificado e dimensões confirmadas (verde azulado) |
+| **Caneta** | `#2343B5` | `#8AA4FF` | status Revisão do contador e marcas de correção (azul de caneta esferográfica) |
+| **Ocre** | `#A44D06` | `#F0A45B` | status Aguardando informação e trechos divergentes |
 | Perigo | `#B42318` | `#FF8A80` | ações destrutivas e erros |
 
 Os três status usam matizes separados em luminância e tom (seguro para daltonismo) e **nunca aparecem
-só por cor**: sempre ícone + texto (`CheckCircle2` Confirmado, `PenLine` Corrigido, `AlertTriangle`
-Análise humana). Contraste de texto ≥ 4,5:1 nos dois temas.
+só por cor**: sempre ícone + texto (`CheckCircle2` Classificado, `CircleHelp` Aguardando informação,
+`UserCheck` Revisão do contador, `Scale` Revisão do especialista). Contraste de texto ≥ 4,5:1 nos dois temas.
 
 ## Tipografia
 
