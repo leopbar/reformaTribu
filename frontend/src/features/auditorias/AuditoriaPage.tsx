@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { ETAPAS, ROTULO_STATUS_AUDITORIA, useAuditoria, type Auditoria } from "./comum";
 import { Passos } from "./NovaAuditoriaPage";
 import { FamiliasPainel } from "./FamiliasPainel";
+import { FluxoAuditoria } from "./FluxoAgentes";
 import { PerguntasPainel } from "./PerguntasPainel";
 import { Resultado } from "./Resultado";
 
@@ -148,6 +149,7 @@ function Abas({ auditoria }: { auditoria: Auditoria }) {
         <TabsTrigger value="familias">
           Famílias investigadas {c.familias ? <span className="num text-tinta-3">({fmtNum(c.familias)})</span> : null}
         </TabsTrigger>
+        <TabsTrigger value="fluxo">Fluxo dos agentes</TabsTrigger>
       </TabsList>
       <TabsContent value="itens">
         {c.perguntas_abertas ? (
@@ -165,6 +167,9 @@ function Abas({ auditoria }: { auditoria: Auditoria }) {
       </TabsContent>
       <TabsContent value="familias">
         <FamiliasPainel auditId={auditoria.id} />
+      </TabsContent>
+      <TabsContent value="fluxo">
+        <FluxoAuditoria auditId={auditoria.id} />
       </TabsContent>
     </Tabs>
   );
@@ -305,7 +310,7 @@ function PreviaInicio({ auditoria }: { auditoria: Auditoria }) {
               className={cn("rounded-md border px-3 py-2 text-left text-sm", modo === m ? "border-tinta bg-superficie-2" : "border-regua hover:border-regua-forte")}
             >
               <span className="font-medium">{m === "lote" ? "Em lote" : "Tempo real"}</span>
-              <span className="block text-2xs text-tinta-3">{m === "lote" ? "50% mais barato, até 24 h" : "Mais rápido"}</span>
+              <span className="block text-2xs text-tinta-3">{m === "lote" ? "50% mais barato nos modelos Claude, até 24 h" : "Mais rápido"}</span>
             </button>
           ))}
         </div>
@@ -316,6 +321,7 @@ function PreviaInicio({ auditoria }: { auditoria: Auditoria }) {
           <Linha rotulo="Famílias a investigar na lei" valor={fmtNum(Number(escolhida.familias_estimadas ?? 0))} />
           <Linha rotulo="Tokens de entrada / saída" valor={`${fmtNum(Number(escolhida.tokens_entrada_estimados ?? 0))} / ${fmtNum(Number(escolhida.tokens_saida_estimados ?? 0))}`} />
           <Linha rotulo="Tempo" valor={String(escolhida.tempo_texto ?? "")} />
+          <CustoPorAgente agentes={(escolhida.agentes ?? []) as AgenteCusto[]} semLote={(escolhida.sem_lote ?? []) as string[]} />
           <div className="mt-2 border-t border-regua pt-3">
             <dt className="text-xs text-tinta-3">Custo estimado</dt>
             <dd className="num text-2xl font-semibold">{fmtUSD(Number(escolhida.custo_usd_estimado ?? 0))}</dd>
@@ -337,6 +343,34 @@ function PreviaInicio({ auditoria }: { auditoria: Auditoria }) {
           <p className="mt-4 text-xs text-tinta-3">Seu papel não permite iniciar auditorias.</p>
         )}
       </Painel>
+    </div>
+  );
+}
+
+type AgenteCusto = { agente: string; nome: string; modelo_nome: string; chamadas: number; custo_usd: number; lote: boolean };
+
+/** Custo previsto de cada agente, com o modelo escolhido em "Modelos de IA". */
+function CustoPorAgente({ agentes, semLote }: { agentes: AgenteCusto[]; semLote: string[] }) {
+  if (!agentes.length) return null;
+  return (
+    <div className="mt-2 rounded-md border border-regua">
+      <p className="border-b border-regua px-3 py-1.5 text-2xs font-medium text-tinta-3">Custo por agente (modelo atual)</p>
+      <ul className="divide-y divide-regua text-xs">
+        {agentes.map((a) => (
+          <li key={a.agente} className="flex items-baseline gap-2 px-3 py-1.5">
+            <span className="min-w-0 flex-1">
+              <span className="font-medium">{a.nome}</span> <span className="text-tinta-3">· {a.modelo_nome}</span>
+              <span className="block text-2xs text-tinta-3">
+                {fmtNum(a.chamadas)} chamada(s){a.lote ? " · lote −50%" : ""}
+              </span>
+            </span>
+            <span className="num">{fmtUSD(a.custo_usd)}</span>
+          </li>
+        ))}
+      </ul>
+      {semLote.length ? (
+        <p className="border-t border-regua px-3 py-1.5 text-2xs text-ocre">Sem lote (preço cheio, em tempo real): {semLote.join(", ")}.</p>
+      ) : null}
     </div>
   );
 }

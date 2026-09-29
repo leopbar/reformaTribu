@@ -68,7 +68,8 @@ def processar_itens(audit_id: uuid.UUID, org_id: uuid.UUID, item_ids: list[uuid.
                 )
             ).all()
         )
-    ctx = carregar_contexto(audit_id, org_id)
+    # Recarrega a cada bloco: mudanças de configuração (ex.: "refazer pareceres") valem logo.
+    ctx = carregar_contexto(audit_id, org_id, forcar=True)
     aguardando: list[uuid.UUID] = []
     for item_id in item_ids:
         if item_id not in tentativas:

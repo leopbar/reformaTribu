@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import text
 
-from app.api import analise, audits, auth, dashboard, exports, orgs, reference, review
+from app.api import analise, audits, auth, dashboard, exports, fluxo, ia, orgs, reference, review
 from app.config import get_settings
 from app.core.errors import instalar_tratadores
 from app.core.logging import configurar_logs
@@ -51,6 +51,8 @@ for r in (
     audits.router,
     review.router,
     analise.router,
+    fluxo.router,
+    ia.router,
     exports.router,
     reference.router,
 ):

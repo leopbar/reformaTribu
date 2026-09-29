@@ -310,3 +310,39 @@ def test_confirmacao_sem_ia_exige_dois_sinais():
     assert _confirmacao_sem_ia(st, {**atual, "vigente": False}, cand(1, 1, 1)) is None
     curta = ItemState(item_id="1", audit_id="1", org_id="1", estrutura={"descricao_curta": True})
     assert _confirmacao_sem_ia(curta, atual, cand(1, 1, 1)) is None
+
+
+def test_impressao_da_tese_ignora_metadados_dos_alertas() -> None:
+    """Uma nova coleta da base com o mesmo material jurídico não pode refazer a tese."""
+    from app.analise.investigacao import impressao_evidencias
+
+    alerta = {"regra": "Anexo IX", "descricao": "restrição textual", "gravidade": "media", "cclasstrib": "200038"}
+    antes = {
+        "codigo": {"codigo": "10063021"},
+        "trechos_normativos": [{"ref": "P1", "texto": "Arroz"}],
+        "alertas_de_divergencia": [alerta],
+    }
+    depois = {**antes, "alertas_de_divergencia": [{**alerta, "codigos": ["1006"]}]}
+    assert impressao_evidencias(antes) == impressao_evidencias(depois)
+    mudou = {**antes, "trechos_normativos": [{"ref": "P1", "texto": "Arroz e feijão"}]}
+    assert impressao_evidencias(antes) != impressao_evidencias(mudou)
+
+
+# ------------------------------------------------------------------------ conflitos reais --
+def test_conflito_que_nao_muda_o_resultado_nao_trava_o_item() -> None:
+    coerente = {"descricao": "C1 é consistente com o Anexo VII.", "refs": ["C1", "P1"], "muda_resultado": False}
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, tese=tese(conflitos=[coerente])))
+    assert av.status == "classificado"
+
+
+def test_conflito_antigo_so_trava_se_apontar_outro_cclasstrib_permitido() -> None:
+    # Versão antiga do parecer (sem `muda_resultado`): cita só o cClassTrib aplicado e um vedado.
+    refs = {**REFS, "C2": {"tipo": "correlacao", "cclasstrib": "000001", "permissao": "VEDADO"}}
+    so_vedado = {"descricao": "C2 veda o código por já estar no Anexo VII.", "refs": ["C1", "C2"]}
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, tese=tese(conflitos=[so_vedado]), refs=refs))
+    assert av.status == "classificado"
+    # Aponta outro cClassTrib permitido: vai ao especialista.
+    real = {"descricao": "A lei diz 200034, a correlação diz 000001.", "refs": ["P1"], "muda_resultado": True}
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, tese=tese(conflitos=[real])))
+    assert av.status == "revisao_especialista"
+    assert "CONFLITO_NORMATIVO" in av.motivos

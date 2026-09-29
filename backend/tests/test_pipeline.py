@@ -62,6 +62,10 @@ class FakeClaude:
         elif "fatos_pedidos" in conteudo:
             r = self._fatos(conteudo)
             self.chamadas.append("fatos:" + conteudo["item"]["descricao_original"])
+        elif "opcoes" in conteudo and "nivel" in conteudo:
+            # Busca guiada na árvore: "PROD DIVERSOS" não cabe em nenhum capítulo.
+            r = self._arvore(conteudo)
+            self.chamadas.append(f"arvore-{conteudo['nivel']}:" + conteudo["item"]["descricao_original"])
         else:
             r = self._julgar(conteudo)
             self.chamadas.append(("escalar:" if "analise_anterior" in conteudo else "julgar:") + r["_desc"])
@@ -108,6 +112,17 @@ class FakeClaude:
         if "analise_anterior" in conteudo:
             r["concorda_com_analise_anterior"] = True
         return {**r, "_desc": desc}
+
+    def _arvore(self, c: dict[str, Any]) -> dict[str, Any]:
+        opcoes = [o["codigo"] for o in c["opcoes"]]
+        nada = {"escolha": None, "alternativas": [], "confianca": 0.1, "justificativa": "teste"}
+        if "KIT SABONETE" not in c["item"]["descricao_original"]:
+            return nada  # ex.: "PRODUTO MISTERIOSO" não cabe em nenhum capítulo
+        for alvo in ("34013000", "3401", "34"):
+            if alvo in opcoes:
+                alt = [{"codigo": "34011190", "motivo": "se for em barra"}] if alvo == "34013000" else []
+                return {"escolha": alvo, "alternativas": alt, "confianca": 0.8, "justificativa": "sabonete líquido"}
+        return nada
 
     def _investigar(self, c: dict[str, Any]) -> dict[str, Any]:
         codigo = c["codigo"]["codigo"]
@@ -595,3 +610,20 @@ def test_itens_iguais_de_marcas_diferentes_fazem_uma_unica_analise(ambiente: dic
     assert len(julgamentos) == 1, fake.chamadas  # uma chamada serve às três linhas
     assert len([c for c in fake.chamadas if c.startswith("investigar:")]) == 1
     assert {_item(org, i).status for i in ids} == {"aguardando_informacao"}
+
+
+def test_item_sem_ncm_recebe_sugestao_pela_arvore_oficial(ambiente: dict[str, Any]) -> None:
+    from app.audits.processing import processar_itens
+
+    org, fake = ambiente["org_id"], ambiente["fake"]
+    aid, (kit,) = ambiente["nova_auditoria"]([("KIT SABONETE PRESENTE", None)])
+    processar_itens(aid, org, [kit])
+    i = _item(org, kit)
+    # A IA não achou nada na busca; a árvore sugeriu o código e o Jurista enquadrou.
+    assert i.codigo_sugerido == "34013000"
+    assert i.identidade["via_arvore"] is True and i.identidade["situacao"] == "sugerido"
+    assert [a["codigo"] for a in i.identidade["arvore"]["alternativas"]] == ["34011190"]
+    assert i.cclasstrib_sugerido is not None
+    assert i.status == "revisao_contador"  # o NCM sugerido precisa de confirmação
+    assert any(c.startswith("arvore-capitulo:") for c in fake.chamadas)
+    assert any(c.startswith("arvore-codigo:") for c in fake.chamadas)

@@ -47,6 +47,10 @@ class Acao:
     PERGUNTA_RESPONDIDA = "pergunta_respondida"
     DOSSIE = "dossie_alterado"
     TESE_APROVADA = "tese_aprovada"
+    TESE_REFEITA = "tese_refeita"
+    IA_CHAVE = "ia_chave_alterada"
+    IA_MODELO = "ia_modelo_alterado"
+    IA_AGENTE = "ia_agente_alterado"
 
 
 def _registro(

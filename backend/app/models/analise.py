@@ -59,7 +59,7 @@ class TaxThesis(Base):
     org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
     company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"), index=True)
     audit_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("audits.id", ondelete="SET NULL"))
-    chave: Mapped[str] = mapped_column(String(64))
+    chave: Mapped[str] = mapped_column(String(120))
     tipo_codigo: Mapped[str] = mapped_column(String(3))
     codigo: Mapped[str] = mapped_column(String(12))
     cenario: Mapped[str] = mapped_column(String(40))

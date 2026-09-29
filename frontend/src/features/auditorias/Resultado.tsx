@@ -60,6 +60,24 @@ const ordemConfianca = (v: string | null) => (v ? ORDEM_CONFIANCA[v] ?? -1 : -1)
 
 type Linha = { tipo: "grupo"; chave: string; rotulo: string; n: number } | { tipo: "item"; item: LinhaItem; indice: number };
 
+/** Resultado que o usuário precisa ver: a decisão de uma pessoa prevalece sobre a conclusão do analista. */
+function ResultadoFinal({ item }: { item: LinhaItem }) {
+  const pelo = STATUS[item.status as keyof typeof STATUS]?.rotulo ?? item.status;
+  if (item.revisao_status === "aprovado" && !item.aprovado_automaticamente)
+    return (
+      <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-conferido/40 bg-conferido-suave px-2 py-0.5 text-2xs font-medium text-conferido" title={`O analista enviou para “${pelo}”; uma pessoa revisou e aprovou.`}>
+        <Stamp className="size-3.5" aria-hidden /> Aprovado na revisão
+      </span>
+    );
+  if (item.revisao_status === "rejeitado")
+    return (
+      <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-perigo/40 bg-perigo-suave px-2 py-0.5 text-2xs font-medium text-perigo" title={`O analista enviou para “${pelo}”; uma pessoa rejeitou.`}>
+        Rejeitado na revisão
+      </span>
+    );
+  return <SeloStatus status={item.status} />;
+}
+
 export function Resultado({ auditoria }: { auditoria: Auditoria }) {
   const itens = useItens(auditoria.id);
   const { pode } = useAuth();
@@ -111,7 +129,7 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
         sortingFn: (a, b) => ordemConfianca(a.original.confianca_global) - ordemConfianca(b.original.confianca_global),
         cell: (c) => <ConfiancaGlobal valor={c.getValue()} />,
       }),
-      col.accessor("status", { header: "Resultado", size: 190, cell: (c) => <SeloStatus status={c.getValue()} /> }),
+      col.accessor("status", { header: "Resultado", size: 190, cell: (c) => <ResultadoFinal item={c.row.original} /> }),
       col.accessor("revisao_status", {
         header: "Revisão",
         size: 100,
@@ -214,8 +232,13 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
     const caps = new Set<string>();
     let aprovados = 0;
     let automaticos = 0;
+    let resolvidos = 0;
+    const revisados: Record<string, number> = {};
     for (const i of todos) {
       c[i.status] = (c[i.status] ?? 0) + 1;
+      const decidido = i.revisao_status === "aprovado" || i.revisao_status === "rejeitado";
+      if (i.status === "classificado" || decidido) resolvidos++;
+      if (i.status !== "classificado" && decidido) revisados[i.status] = (revisados[i.status] ?? 0) + 1;
       for (const x of i.motivos) m[x] = (m[x] ?? 0) + 1;
       tratamentos.add(i.tratamento ?? "sem");
       const cap = (i.codigo_sugerido ?? i.codigo_atual ?? "").slice(0, 2);
@@ -223,7 +246,7 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
       if (i.revisao_status === "aprovado") aprovados++;
       if (i.revisao_status === "aprovado" && i.aprovado_automaticamente) automaticos++;
     }
-    return { c, m, tratamentos: [...tratamentos].sort(), caps: [...caps].sort(), aprovados, automaticos };
+    return { c, m, tratamentos: [...tratamentos].sort(), caps: [...caps].sort(), aprovados, automaticos, resolvidos, revisados };
   }, [todos]);
 
   if (itens.isError) return <EstadoErro erro={itens.error} aoTentar={() => void itens.refetch()} />;
@@ -236,7 +259,16 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
   return (
     <div className="grid gap-4">
       {/* Resumo: os totais também são filtros */}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[repeat(4,minmax(0,1fr))_minmax(0,1.3fr)]">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[repeat(5,minmax(0,1fr))_minmax(0,1.3fr)]">
+        <div className="rounded-lg border border-conferido/40 bg-conferido-suave px-4 py-3" title="Classificados pelo analista mais os itens já decididos por uma pessoa (aprovados ou rejeitados): prontos para exportar.">
+          <span className="flex items-center gap-1.5 text-xs text-conferido">
+            <Stamp className="size-3.5" aria-hidden /> Resolvidos
+          </span>
+          <span className="num mt-1 block text-2xl font-semibold">{fmtNum(contagem.resolvidos)}</span>
+          <span className="text-2xs text-tinta-3">
+            {fmtPct(contagem.resolvidos / todos.length)} · faltam <span className="num">{fmtNum(todos.length - contagem.resolvidos)}</span>
+          </span>
+        </div>
         {(["classificado", "aguardando_informacao", "revisao_contador", "revisao_especialista"] as const).map((s) => {
           const S = STATUS[s];
           const I = S.icone;
@@ -247,7 +279,10 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
                 <I className="size-3.5" aria-hidden /> {S.rotulo}
               </span>
               <span className="num mt-1 block text-2xl font-semibold">{fmtNum(contagem.c[s] ?? 0)}</span>
-              <span className="text-2xs text-tinta-3">{fmtPct((contagem.c[s] ?? 0) / todos.length)} dos itens</span>
+              <span className="text-2xs text-tinta-3">
+                {fmtPct((contagem.c[s] ?? 0) / todos.length)} dos itens
+                {contagem.revisados[s] ? <> · <span className="num">{fmtNum(contagem.revisados[s] ?? 0)}</span> já revisado(s)</> : null}
+              </span>
             </button>
           );
         })}

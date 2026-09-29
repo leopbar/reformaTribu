@@ -269,8 +269,10 @@ SCHEMA_INVESTIGACAO: dict[str, Any] = {
                 "properties": {
                     "descricao": {"type": "string"},
                     "refs": {"type": "array", "items": {"type": "string"}},
+                    "muda_resultado": {"type": "boolean"},
+                    "cclasstrib_em_jogo": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["descricao", "refs"],
+                "required": ["descricao", "refs", "muda_resultado", "cclasstrib_em_jogo"],
                 "additionalProperties": False,
             },
         },
@@ -332,6 +334,9 @@ class ImpostoSeletivo(BaseModel):
 class Conflito(BaseModel):
     descricao: str
     refs: list[str] = Field(default_factory=list)
+    # Só um conflito que muda o cClassTrib aplicado trava o item (versões antigas não têm os campos).
+    muda_resultado: bool = True
+    cclasstrib_em_jogo: list[str] = Field(default_factory=list)
 
 
 class Investigacao(BaseModel):
@@ -376,3 +381,50 @@ class FatoExtraido(BaseModel):
 
 class FatosItem(BaseModel):
     fatos: list[FatoExtraido]
+
+
+# ------------------------------------------------------------ busca guiada pela árvore oficial --
+SCHEMA_NAVEGACAO: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "escolha": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "alternativas": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"codigo": {"type": "string"}, "motivo": {"type": "string"}},
+                "required": ["codigo", "motivo"],
+                "additionalProperties": False,
+            },
+        },
+        "confianca": {"type": "number"},
+        "justificativa": {"type": "string"},
+    },
+    "required": ["escolha", "alternativas", "confianca", "justificativa"],
+    "additionalProperties": False,
+}
+
+
+class AlternativaArvore(BaseModel):
+    codigo: str
+    motivo: str = ""
+
+
+class NavegacaoArvore(BaseModel):
+    escolha: str | None
+    alternativas: list[AlternativaArvore] = Field(default_factory=list)
+    confianca: float
+    justificativa: str = ""
+
+    @field_validator("confianca")
+    @classmethod
+    def _limitar(cls, v: float) -> float:
+        return max(0.0, min(1.0, float(v)))
+
+    @field_validator("escolha")
+    @classmethod
+    def _digitos(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        d = "".join(c for c in v if c.isdigit())
+        return d or None

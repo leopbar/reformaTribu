@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.analise import aplicacao, dossie, transicao
 from app.analise import fatos as fatos_mod
@@ -17,12 +18,15 @@ from app.analise import pendencias as pend_mod
 from app.analise.avaliacao import DIMENSOES
 from app.api.audits import _carregar_auditoria
 from app.api.orgs import garantir_acesso_empresa
+from app.audits.processing import enfileirar_itens
 from app.core.audit_trail import Acao, registrar
 from app.core.codes import formatar_codigo
 from app.core.deps import Principal, SessionDep, exigir
 from app.core.errors import Conflito, NaoEncontrado
 from app.core.rbac import Perm
+from app.llm import catalogo as catalogo_ia
 from app.models import (
+    Audit,
     AuditItem,
     Company,
     CompanyFact,
@@ -35,7 +39,7 @@ from app.models import (
     TaxProfile,
     TaxThesis,
 )
-from app.models.enums import EscopoFato, OrigemFato, StatusPendencia
+from app.models.enums import EscopoFato, OrigemFato, StatusAuditoria, StatusItem, StatusPendencia, StatusRevisao
 from app.worker.celery_app import celery_app
 
 router = APIRouter(tags=["analista fiscal"])
@@ -69,9 +73,12 @@ async def _reavaliar_ou_enfileirar(
 
 
 async def _atualizar_contadores(audit_ids: set[uuid.UUID], org_id: uuid.UUID, session: Any) -> None:
+    """Recalcula os contadores já na resposta: a tela recarrega logo em seguida e precisa vê-los certos."""
     await session.commit()
+    from app.audits.processing import atualizar_contadores
+
     for a in audit_ids:
-        celery_app.send_task("analise.atualizar_contadores", args=[str(a), str(org_id)], queue="pipeline")
+        await run_in_threadpool(atualizar_contadores, a, org_id)
 
 
 # ================================================================================ dossiê ==
@@ -735,3 +742,106 @@ async def dossie_decisao(item_id: uuid.UUID, principal: Ver, session: SessionDep
             for c in calls
         ],
     )
+
+
+# ================================================================ refazer com o modelo atual ==
+class RefazerOut(BaseModel):
+    teses: int
+    itens: int
+    aprovados_mantidos: int
+    modelo: str
+    mensagem: str
+
+
+async def _refazer(session: Any, principal: Principal, a: Audit, teses: list[TaxThesis]) -> RefazerOut:
+    """Substitui os pareceres (ficam no histórico) e reprocessa os itens desta auditoria que os usavam.
+
+    O Jurista estuda de novo com o modelo escolhido agora em "Modelos de IA". A identificação dos itens
+    é reaproveitada (mesma resposta, sem custo) quando o modelo do Identificador não mudou.
+    """
+    if a.status not in (StatusAuditoria.CONCLUIDA, StatusAuditoria.PROCESSANDO):
+        raise Conflito("Só é possível refazer pareceres de auditorias em andamento ou concluídas.")
+    agentes = await run_in_threadpool(catalogo_ia.agentes_configurados)
+    jurista = agentes["jurista"]
+    ids_teses = [t.id for t in teses if t.status == "concluida"]
+    for t in teses:
+        if t.status != "concluida":
+            continue
+        sufixo = f":sub:{uuid.uuid4().hex[:8]}"
+        t.status = "substituida"
+        t.chave = f"{t.chave[:100]}{sufixo}"
+        if t.llm_call_id:
+            call = await session.get(LlmCall, t.llm_call_id)
+            if call is not None:
+                # Libera a chave de idempotência: a nova chamada não pode reaproveitar a resposta antiga.
+                call.chave_idempotencia = f"{call.chave_idempotencia[:180]}{sufixo}"
+    itens = list(
+        await session.scalars(
+            select(AuditItem).where(AuditItem.audit_id == a.id, AuditItem.thesis_id.in_(ids_teses or [uuid.uuid4()]))
+        )
+    )
+    reprocessar: list[uuid.UUID] = []
+    mantidos = 0
+    for i in itens:
+        if i.revisao_status == StatusRevisao.APROVADO and not i.aprovado_automaticamente:
+            mantidos += 1  # decisão de uma pessoa não é desfeita por reprocessamento
+            continue
+        if i.revisao_status == StatusRevisao.APROVADO:
+            i.revisao_status = StatusRevisao.PENDENTE
+        i.tentativa += 1
+        i.status, i.etapa, i.motivos, i.perguntas = StatusItem.PENDENTE, None, [], []
+        i.aprovado_automaticamente = False
+        reprocessar.append(i.id)
+    conf = dict(a.configuracao or {})
+    conf["modelos"] = {**(conf.get("modelos") or {}), "jurista": jurista["modelo"]}
+    conf["esforcos"] = {**(conf.get("esforcos") or {}), "jurista": jurista["esforco"]}
+    a.configuracao = conf
+    if reprocessar:
+        a.status = StatusAuditoria.PROCESSANDO
+        a.modo = "tempo_real"
+    await registrar(
+        session,
+        principal,
+        Acao.TESE_REFEITA,
+        entidade="auditoria",
+        entidade_id=a.id,
+        detalhes={"teses": [str(t) for t in ids_teses], "modelo": jurista["modelo"], "itens": len(reprocessar)},
+    )
+    await session.commit()
+    if reprocessar:
+        enfileirar_itens(a.id, a.org_id, reprocessar)
+    info = await run_in_threadpool(catalogo_ia.info_modelo, jurista["modelo"])
+    nome = info.nome if info else jurista["modelo"]
+    msg = f"{len(ids_teses)} parecer(es) serão refeitos com {nome}; {len(reprocessar)} item(ns) em reprocessamento."
+    if mantidos:
+        msg += f" {mantidos} item(ns) aprovados por pessoas foram mantidos."
+    return RefazerOut(
+        teses=len(ids_teses), itens=len(reprocessar), aprovados_mantidos=mantidos, modelo=nome, mensagem=msg
+    )
+
+
+class RefazerIn(BaseModel):
+    audit_id: uuid.UUID
+
+
+@router.post("/teses/{tese_id}/refazer", response_model=RefazerOut)
+async def refazer_tese(tese_id: uuid.UUID, dados: RefazerIn, principal: Revisar, session: SessionDep) -> RefazerOut:
+    """Refaz o parecer desta família com o modelo atual do Jurista (gera custo de IA)."""
+    t = await session.get(TaxThesis, tese_id)
+    if t is None:
+        raise NaoEncontrado("Tese não encontrada.")
+    a = await _carregar_auditoria(session, principal, dados.audit_id)
+    return await _refazer(session, principal, a, [t])
+
+
+@router.post("/auditorias/{audit_id}/teses/refazer", response_model=RefazerOut)
+async def refazer_teses_auditoria(audit_id: uuid.UUID, principal: Revisar, session: SessionDep) -> RefazerOut:
+    """Refaz todos os pareceres usados por esta auditoria com o modelo atual do Jurista."""
+    a = await _carregar_auditoria(session, principal, audit_id)
+    ids = set(
+        await session.scalars(
+            select(AuditItem.thesis_id).where(AuditItem.audit_id == audit_id, AuditItem.thesis_id.is_not(None))
+        )
+    )
+    teses = list(await session.scalars(select(TaxThesis).where(TaxThesis.id.in_(ids or {uuid.uuid4()}))))
+    return await _refazer(session, principal, a, teses)

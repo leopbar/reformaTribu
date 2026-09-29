@@ -41,6 +41,7 @@ def consolidar(
     candidatos: list[dict[str, Any]],
     motivos: list[str],
     confirmado_sem_ia: int | None = None,
+    arvore: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     atual = (estrutura or {}).get("codigo_atual") or {}
     anterior = atual.get("provavel") or atual.get("codigo")
@@ -82,6 +83,25 @@ def consolidar(
             "entendimento": f"Código informado confirmado sem IA: na busca pela descrição na tabela oficial, "
             f"ele é o {confirmado_sem_ia}º mais provável.",
             "sinais_de_duvida": [],
+        }
+    if arvore and arvore.get("codigo") and codigo_final == arvore["codigo"] and tipo_codigo_final:
+        # Sugestão da busca guiada pela árvore oficial: vale como ponto de partida, a confirmar por uma pessoa.
+        return {
+            **base,
+            "situacao": "corrigido" if anterior else "sugerido",
+            "via_arvore": True,
+            "tipo_codigo": tipo_codigo_final,
+            "codigo": codigo_final,
+            "codigo_formatado": formatar_codigo(tipo_codigo_final, codigo_final),
+            "descricao_oficial": next(
+                (c["descricao_completa"] for c in candidatos if c["codigo"] == codigo_final), None
+            ),
+            "confianca_modelo": float(arvore.get("confianca") or 0),
+            "descricao_suficiente": True,
+            "concordancia": False,
+            "entendimento": arvore.get("justificativa"),
+            "sinais_de_duvida": [],
+            "arvore": arvore,
         }
     parecer = escalonamento if (escalonado and escalonamento_valido) else (julgamento if julgamento_valido else None)
     if parecer is None or not codigo_final or not tipo_codigo_final:

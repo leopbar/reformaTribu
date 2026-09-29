@@ -6,11 +6,12 @@ import { api, ok } from "@/api/client";
 import { useAuth } from "@/auth/auth";
 import { Codigo, ConfiancaGlobal, EstadoErro, mensagemErro, Motivo, ORIGEM_FATO, RelatorioConfianca, SeloRevisao, SeloStatus } from "@/components/dominio";
 import { ReguaConferencia, type CodigoInfo } from "@/components/ReguaConferencia";
-import { Aviso, Button, Dialog, DialogContent, Input, Kbd, Skeleton, Textarea } from "@/components/ui/primitives";
+import { Aviso, Button, Dialog, DialogContent, Input, Kbd, Skeleton, Tabs, TabsContent, TabsList, TabsTrigger, Textarea } from "@/components/ui/primitives";
 import { fmtData, fmtDataHora, fmtUSD } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { TRATAMENTO, useDossieItem, useItemDetalhe } from "./comum";
 import { DetalheTese } from "./FamiliasPainel";
+import { CaminhoItem } from "./FluxoAgentes";
 import { useResponder } from "./PerguntasPainel";
 
 const ACOES_HIST: Record<string, string> = {
@@ -106,6 +107,21 @@ export function DetalheItem({
   const [editando, setEditando] = useState(false);
   const [rejeitando, setRejeitando] = useState(false);
   const [teseAberta, setTeseAberta] = useState(false);
+  const [vista, setVista] = useState(() => {
+    try {
+      return sessionStorage.getItem("vista-item") ?? "decisao";
+    } catch {
+      return "decisao";
+    }
+  });
+  const mudarVista = (v: string) => {
+    setVista(v);
+    try {
+      sessionStorage.setItem("vista-item", v);
+    } catch {
+      /* armazenamento indisponível */
+    }
+  };
 
   if (q.isError) return <EstadoErro erro={q.error} aoTentar={() => void q.refetch()} />;
   if (!q.data) return <Skeleton className="h-[32rem]" />;
@@ -141,7 +157,20 @@ export function DetalheItem({
     confianca_global?: string;
     perfil_versao?: number;
   };
-  const idt = d.identidade as { situacao?: string; entendimento?: string; problemas_cadastro?: string[]; descricao_normalizada?: string };
+  const idt = d.identidade as {
+    situacao?: string;
+    entendimento?: string;
+    problemas_cadastro?: string[];
+    descricao_normalizada?: string;
+    via_arvore?: boolean;
+    arvore?: {
+      tipo_codigo: string;
+      codigo_formatado?: string;
+      confianca?: number;
+      caminho?: { codigo: string; descricao: string }[];
+      alternativas?: { codigo: string; codigo_formatado: string; descricao: string; motivo: string }[];
+    };
+  };
   const perguntas = (d.perguntas ?? []) as Pergunta[];
   const podeRevisar = pode("revisar");
   const aprovadoHumano = it.revisao_status === "aprovado" && !it.aprovado_automaticamente;
@@ -170,6 +199,15 @@ export function DetalheItem({
         </p>
       </div>
 
+      <Tabs value={vista} onValueChange={mudarVista}>
+        <TabsList>
+          <TabsTrigger value="decisao">Decisão</TabsTrigger>
+          <TabsTrigger value="caminho">Caminho pelos agentes</TabsTrigger>
+        </TabsList>
+        <TabsContent value="caminho" className="mt-4">
+          <CaminhoItem itemId={itemId} />
+        </TabsContent>
+        <TabsContent value="decisao" className="mt-4 flex flex-col gap-5">
       {/* Resultado */}
       <section className="rounded-lg border border-regua bg-superficie-2 p-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -234,6 +272,33 @@ export function DetalheItem({
       <Secao titulo="Identificação do item" icone={<FileSearch className="size-4" />}>
         {ident.data ? <ReguaConferencia atual={ident.data.codigo_atual as CodigoInfo | null} sugerido={ident.data.codigo_sugerido as CodigoInfo | null} /> : <Skeleton className="h-24" />}
         {idt.entendimento ? <p className="mt-2 text-sm text-tinta-2">{idt.entendimento}</p> : null}
+        {idt.via_arvore && idt.arvore ? (
+          <Aviso tom="atencao" className="mt-2" titulo={`NCM sugerido pela busca na tabela oficial: ${idt.arvore.codigo_formatado ?? ""} — confirme`}>
+            <p className="text-xs">
+              O item veio sem NCM (ou nenhuma alternativa servia). O Navegador desceu pela tabela oficial:{" "}
+              {(idt.arvore.caminho ?? []).map((c) => c.codigo).join(" › ")}. Certeza de {Math.round((idt.arvore.confianca ?? 0) * 100)}%. O CST e o cClassTrib acima já seguem esta sugestão.
+            </p>
+            {idt.arvore.alternativas?.length ? (
+              <ul className="mt-2 grid gap-1.5">
+                <li className="text-2xs font-medium text-tinta-3">Outras possibilidades:</li>
+                {idt.arvore.alternativas.map((a) => (
+                  <li key={a.codigo} className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="codigo font-medium">{a.codigo_formatado}</span>
+                    <span className="flex-1 text-tinta-2">
+                      {a.descricao}
+                      {a.motivo ? <span className="block text-2xs text-tinta-3">{a.motivo}</span> : null}
+                    </span>
+                    {podeRevisar && !aprovadoHumano ? (
+                      <Button tamanho="sm" variant="secundario" disabled={acoes.editar.isPending} onClick={() => acoes.editar.mutate({ tipo_codigo: idt.arvore!.tipo_codigo, codigo: a.codigo })}>
+                        Usar este
+                      </Button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </Aviso>
+        ) : null}
         {idt.problemas_cadastro?.length ? (
           <p className="mt-2 text-xs text-ocre">Problemas no cadastro legado: {idt.problemas_cadastro.map((m) => textos?.[m]?.[0] ?? m).join(" · ")}</p>
         ) : null}
@@ -328,6 +393,8 @@ export function DetalheItem({
           </ul>
         </Colapsavel>
       ) : null}
+        </TabsContent>
+      </Tabs>
 
       {podeRevisar ? (
         <div className="sticky bottom-0 -mx-6 flex flex-wrap items-center gap-2 border-t border-regua bg-superficie px-6 py-3">

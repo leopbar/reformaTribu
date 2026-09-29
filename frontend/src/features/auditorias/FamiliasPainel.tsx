@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BadgeCheck, BookOpenText, Scale } from "lucide-react";
+import { BadgeCheck, BookOpenText, RefreshCw, Scale } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { api, ok } from "@/api/client";
@@ -20,6 +20,7 @@ export function FamiliasPainel({ auditId }: { auditId: string }) {
     queryFn: () => ok(api.GET("/api/auditorias/{audit_id}/teses", { params: { path: { audit_id: auditId } } })),
   });
   const [aberta, setAberta] = useState<string | null>(null);
+  const [refazer, setRefazer] = useState<{ id: string | null; codigo?: string } | null>(null);
   if (q.isError) return <EstadoErro erro={q.error} aoTentar={() => void q.refetch()} />;
   if (!q.data) return <Skeleton className="h-64" />;
   if (q.data.length === 0)
@@ -31,6 +32,12 @@ export function FamiliasPainel({ auditId }: { auditId: string }) {
         as condições de cada uma e os trechos que as fundamentam. Depois aplica esse raciocínio aos fatos de cada item.
         Um revisor pode validar a tese: ela passa a contar como precedente aprovado.
       </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-2xs text-tinta-3">Trocou o modelo do Jurista? Os pareceres já feitos continuam valendo até você pedir para refazer.</p>
+        <Button variant="secundario" tamanho="sm" className="ml-auto" onClick={() => setRefazer({ id: null })}>
+          <RefreshCw /> Refazer todos com o modelo atual
+        </Button>
+      </div>
       <Painel className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -76,6 +83,10 @@ export function FamiliasPainel({ auditId }: { auditId: string }) {
                   <Button variant="fantasma" tamanho="sm" onClick={() => setAberta(t.id)}>
                     <BookOpenText /> Ver raciocínio
                   </Button>
+                  <Button variant="fantasma" tamanho="sm" onClick={() => setRefazer({ id: t.id, codigo: t.codigo_formatado })} title="Refazer este parecer com o modelo atual do Jurista">
+                    <RefreshCw /> Refazer
+                  </Button>
+                  {t.modelo ? <span className="codigo block text-2xs text-tinta-3">feito com {t.modelo}</span> : null}
                 </td>
               </tr>
             ))}
@@ -89,6 +100,52 @@ export function FamiliasPainel({ auditId }: { auditId: string }) {
           </DialogContent>
         ) : null}
       </Dialog>
+      <Dialog open={!!refazer} onOpenChange={(o) => !o && setRefazer(null)}>
+        {refazer ? (
+          <DialogContent
+            titulo={refazer.id ? `Refazer o parecer da família ${refazer.codigo ?? ""}` : "Refazer todos os pareceres desta auditoria"}
+            descricao="O Jurista estuda a lei de novo com o modelo escolhido agora em “Modelos de IA”. O parecer antigo fica no histórico."
+          >
+            <ConfirmarRefazer auditId={auditId} teseId={refazer.id} aoConcluir={() => setRefazer(null)} />
+          </DialogContent>
+        ) : null}
+      </Dialog>
+    </div>
+  );
+}
+
+function ConfirmarRefazer({ auditId, teseId, aoConcluir }: { auditId: string; teseId: string | null; aoConcluir: () => void }) {
+  const qc = useQueryClient();
+  const org = useQuery({ queryKey: ["organizacao"], queryFn: () => ok(api.GET("/api/organizacao")) });
+  const jurista = org.data?.configuracoes.modelos_agentes["Jurista"];
+  const m = useMutation({
+    mutationFn: () =>
+      teseId
+        ? ok(api.POST("/api/teses/{tese_id}/refazer", { params: { path: { tese_id: teseId } }, body: { audit_id: auditId } }))
+        : ok(api.POST("/api/auditorias/{audit_id}/teses/refazer", { params: { path: { audit_id: auditId } } })),
+    onSuccess: (r) => {
+      toast.success(r.mensagem);
+      for (const k of [["teses", auditId], ["auditoria", auditId], ["itens", auditId], ["fluxo", auditId]]) void qc.invalidateQueries({ queryKey: k });
+      aoConcluir();
+    },
+    onError: (e) => toast.error(mensagemErro(e)),
+  });
+  return (
+    <div className="grid gap-3 text-sm">
+      <p>
+        Modelo que vai refazer: <b>{jurista ?? "…"}</b>
+      </p>
+      <Aviso tom="atencao">
+        Gera custo de IA (uma chamada do Jurista por família). Os itens da família são reanalisados; a identificação do NCM é reaproveitada sem custo se o modelo do Identificador não mudou. Itens aprovados por pessoas não são alterados.
+      </Aviso>
+      <div className="flex justify-end gap-2">
+        <Button variant="fantasma" onClick={aoConcluir}>
+          Cancelar
+        </Button>
+        <Button variant="primario" onClick={() => m.mutate()} disabled={m.isPending}>
+          <RefreshCw /> {m.isPending ? "Enviando…" : "Refazer"}
+        </Button>
+      </div>
     </div>
   );
 }

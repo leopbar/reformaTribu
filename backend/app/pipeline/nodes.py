@@ -401,7 +401,8 @@ def _executar(req: gateway.RequisicaoLLM, ctx: Contexto) -> gateway.ResultadoLLM
     trava = redis_sync().lock(f"trava:llm:{req.chave_idempotencia}", timeout=600, blocking_timeout=600)
     trava.acquire()
     try:
-        if ctx.modo != "lote":
+        # Lote só existe para modelos com Batch API (Anthropic); os demais saem em tempo real.
+        if ctx.modo != "lote" or not gateway.suporta_lote(req.modelo):
             return gateway.chamar_tempo_real(req)
         existente = gateway.resultado_existente(req)
         if isinstance(existente, gateway.ResultadoLLM):

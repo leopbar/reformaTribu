@@ -11,7 +11,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from app.config import get_settings
-from app.pipeline import analista, nodes
+from app.pipeline import analista, arvore, nodes
 from app.pipeline.context import Contexto
 from app.pipeline.state import ItemState
 
@@ -27,13 +27,22 @@ def _apos_memoria(state: ItemState) -> str:
 def _apos_candidatos(state: ItemState) -> str:
     if state.confirmado_sem_ia:
         return "investigar"
-    return "julgar_coerencia" if state.candidatos else "concluir"
+    return "julgar_coerencia" if state.candidatos else "navegar_arvore"
 
 
 def _apos_julgamento(state: ItemState) -> str:
-    if not state.julgamento_valido:
-        return "concluir"
-    return "escalar" if state.precisa_escalar else "investigar"
+    if state.julgamento_valido and state.precisa_escalar:
+        return "escalar"
+    # Sem código (nenhuma alternativa serve ou resposta descartada): busca guiada na árvore oficial.
+    return "navegar_arvore" if arvore.precisa_navegar(state) else "investigar"
+
+
+def _apos_escalonamento(state: ItemState) -> str:
+    return "navegar_arvore" if arvore.precisa_navegar(state) else "investigar"
+
+
+def _apos_arvore(state: ItemState) -> str:
+    return "concluir" if arvore.precisa_navegar(state) else "investigar"
 
 
 def _apos_investigacao(state: ItemState) -> str:
@@ -49,6 +58,7 @@ def construir_grafo() -> StateGraph[Any, Any, Any, Any]:
     g.add_node("recuperar_candidatos", nodes.recuperar_candidatos)
     g.add_node("julgar_coerencia", nodes.julgar_coerencia)
     g.add_node("escalar", nodes.escalar)
+    g.add_node("navegar_arvore", arvore.navegar_arvore)
     g.add_node("investigar", analista.investigar)
     g.add_node("levantar_fatos", analista.levantar_fatos)
     g.add_node("concluir", analista.concluir)
@@ -57,9 +67,12 @@ def construir_grafo() -> StateGraph[Any, Any, Any, Any]:
     g.add_edge("normalizar", "validar_estrutura")
     g.add_conditional_edges("validar_estrutura", _apos_validacao, ["concluir", "buscar_memoria"])
     g.add_conditional_edges("buscar_memoria", _apos_memoria, ["investigar", "recuperar_candidatos"])
-    g.add_conditional_edges("recuperar_candidatos", _apos_candidatos, ["julgar_coerencia", "investigar", "concluir"])
-    g.add_conditional_edges("julgar_coerencia", _apos_julgamento, ["escalar", "investigar", "concluir"])
-    g.add_edge("escalar", "investigar")
+    g.add_conditional_edges(
+        "recuperar_candidatos", _apos_candidatos, ["julgar_coerencia", "investigar", "navegar_arvore"]
+    )
+    g.add_conditional_edges("julgar_coerencia", _apos_julgamento, ["escalar", "investigar", "navegar_arvore"])
+    g.add_conditional_edges("escalar", _apos_escalonamento, ["navegar_arvore", "investigar"])
+    g.add_conditional_edges("navegar_arvore", _apos_arvore, ["investigar", "concluir"])
     g.add_conditional_edges("investigar", _apos_investigacao, ["levantar_fatos", "concluir"])
     g.add_edge("levantar_fatos", "concluir")
     g.add_edge("concluir", END)

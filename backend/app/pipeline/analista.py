@@ -51,6 +51,10 @@ def codigo_escolhido(state: ItemState) -> tuple[str | None, str | None, dict[str
     if state.memoria or state.confirmado_sem_ia:
         return state.tipo_codigo_final, state.codigo_final, dict(state.atributos)
     j = state.julgamento if state.julgamento_valido else None
+    if state.arvore and state.arvore.get("codigo"):
+        # Código sugerido pela busca guiada na árvore oficial (o julgamento não tinha encontrado um).
+        atributos = AtributosExtraidos.model_validate(j["atributos_extraidos"]).como_dict() if j else {}
+        return state.arvore["tipo_codigo"], state.arvore["codigo"], atributos
     esc = state.escalonamento if state.escalonamento_valido else None
     fonte = esc or j
     if fonte is None:
@@ -82,6 +86,7 @@ def identidade(state: ItemState) -> dict[str, Any]:
         candidatos=state.candidatos,
         motivos=state.motivos,
         confirmado_sem_ia=state.posicao_confirmacao if state.confirmado_sem_ia else None,
+        arvore=state.arvore,
     )
 
 
@@ -95,21 +100,62 @@ def investigar(state: ItemState, runtime: Rt) -> dict[str, Any]:
     if not codigo or not tipo or ctx.snapshot_id is None:
         return {**saida, "tese_id": None}
     prompt = carregar("investigar_enquadramento", ctx.prompts.get("investigar_enquadramento"))
-    chave = investigacao.chave_familia(
-        company_id="",  # a tese vale para toda a organização (mesmo dossiê → mesma tese)
-        tipo_codigo=tipo,
-        codigo=codigo,
-        cenario=ctx.cenario,
-        data_referencia=ctx.data_referencia,
-        snapshot_id=str(ctx.snapshot_id),
-        dossie=ctx.dossie,
-        prompt=prompt.rotulo,
-    )
+    # O material jurídico é montado antes da busca da tese: a chave é o conteúdo dele (sem custo de IA).
+    versao_cod = ctx.versao(tipo)
+    with sync_tenant_session(ctx.tenant) as s:
+        no = obter_no(s, tipo, versao_cod, codigo) if versao_cod else None
+    consulta = " ".join(((no or {}).get("descricao_completa") or "").split(" › ")[-3:])
+    emb = None
+    if ctx.completude.get("embeddings_normas") and consulta:
+        try:
+            emb = embeddings.embed([consulta])[0]
+        except embeddings.EmbeddingsIndisponivel:
+            emb = None
+    with sync_tenant_session(ctx.tenant) as s:
+        ev = evidencias.montar(
+            s,
+            tipo_codigo=tipo,
+            codigo=codigo,
+            data_referencia=ctx.data_referencia,
+            versoes=ctx.versoes,
+            versoes_normas=ctx.versoes_normas,
+            regras_ids=[str(r.id) for r in [*ctx.regras.aprovadas, *ctx.regras.pendentes]],
+            fatos_empresa=ctx.dossie,
+            embedding=emb,
+        )
+
+    def chave_de(pacote: dict[str, Any], dossie: dict[str, str]) -> str:
+        return investigacao.chave_familia(
+            company_id="",  # a tese vale para toda a organização (mesmo dossiê → mesma tese)
+            tipo_codigo=tipo,
+            codigo=codigo,
+            cenario=ctx.cenario,
+            data_referencia=ctx.data_referencia,
+            evidencias=investigacao.impressao_evidencias(pacote),
+            dossie=dossie,
+        )
+
+    chave = chave_de(ev.pacote, ctx.dossie)
 
     def existente() -> str | None:
         with sync_tenant_session(ctx.tenant) as s:
             t = s.scalar(select(TaxThesis).where(TaxThesis.chave == chave, TaxThesis.status == "concluida"))
-            return str(t.id) if t else None
+            if t is not None:
+                return str(t.id)
+            # Teses gravadas com outra forma de chave: compara pelo material que elas guardaram.
+            for t in s.scalars(
+                select(TaxThesis).where(
+                    TaxThesis.status == "concluida",
+                    TaxThesis.tipo_codigo == tipo,
+                    TaxThesis.codigo == codigo,
+                    TaxThesis.cenario == ctx.cenario,
+                    TaxThesis.data_referencia == ctx.data_referencia,
+                )
+            ):
+                pacote = (t.evidencias or {}).get("pacote")
+                if pacote and chave_de(pacote, t.fatos_empresa or {}) == chave:
+                    return str(t.id)
+            return None
 
     if (tid := existente()) is not None:
         return {**saida, "tese_id": tid}
@@ -119,28 +165,6 @@ def investigar(state: ItemState, runtime: Rt) -> dict[str, Any]:
     try:
         if (tid := existente()) is not None:
             return {**saida, "tese_id": tid}
-        versao_cod = ctx.versao(tipo)
-        with sync_tenant_session(ctx.tenant) as s:
-            no = obter_no(s, tipo, versao_cod, codigo) if versao_cod else None
-        consulta = " ".join(((no or {}).get("descricao_completa") or "").split(" › ")[-3:])
-        emb = None
-        if ctx.completude.get("embeddings_normas") and consulta:
-            try:
-                emb = embeddings.embed([consulta])[0]
-            except embeddings.EmbeddingsIndisponivel:
-                emb = None
-        with sync_tenant_session(ctx.tenant) as s:
-            ev = evidencias.montar(
-                s,
-                tipo_codigo=tipo,
-                codigo=codigo,
-                data_referencia=ctx.data_referencia,
-                versoes=ctx.versoes,
-                versoes_normas=ctx.versoes_normas,
-                regras_ids=[str(r.id) for r in [*ctx.regras.aprovadas, *ctx.regras.pendentes]],
-                fatos_empresa=ctx.dossie,
-                embedding=emb,
-            )
         req = gateway.RequisicaoLLM(
             no="investigar_enquadramento",
             modelo=ctx.modelo_investigacao,
@@ -242,7 +266,7 @@ def levantar_fatos(state: ItemState, runtime: Rt) -> dict[str, Any]:
     prompt = carregar("extrair_fatos", ctx.prompts.get("extrair_fatos"))
     req = gateway.RequisicaoLLM(
         no="extrair_fatos",
-        modelo=ctx.modelo_leve,
+        modelo=ctx.modelo_fatos,
         prompt=prompt,
         conteudo_usuario={
             "item": dados_item,
@@ -261,7 +285,7 @@ def levantar_fatos(state: ItemState, runtime: Rt) -> dict[str, Any]:
         validador=FatosItem,
         esforco="low",
         chave_idempotencia=chave_conteudo(
-            "fatos", ctx.modelo_leve, prompt.rotulo, {"t": state.tese_id, "i": dados_item, "p": pedidos}
+            "fatos", ctx.modelo_fatos, prompt.rotulo, {"t": state.tese_id, "i": dados_item, "p": pedidos}
         ),
         org_id=ctx.org_id,
         audit_id=ctx.audit_id,

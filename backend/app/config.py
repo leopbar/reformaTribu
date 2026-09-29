@@ -44,6 +44,12 @@ class Settings(BaseSettings):
 
     # Anthropic. A chave só existe no servidor.
     anthropic_api_key: SecretStr | None = Field(None, alias="ANTHROPIC_API_KEY")
+    # Outras plataformas (opcional: as chaves cadastradas na tela "Chaves de API" têm precedência).
+    openai_api_key: SecretStr | None = Field(None, alias="OPENAI_API_KEY")
+    deepseek_api_key: SecretStr | None = Field(None, alias="DEEPSEEK_API_KEY")
+    # Segredo que cifra as chaves de API guardadas no banco. Se vazio, deriva do JWT_SECRET
+    # (trocar o JWT_SECRET, nesse caso, exige cadastrar as chaves de novo).
+    llm_keys_secret: SecretStr | None = Field(None, alias="LLM_KEYS_SECRET")
     llm_model_primary: str = Field("claude-haiku-4-5-20251001", alias="LLM_MODEL_PRIMARY")
     llm_model_escalation: str = Field("claude-sonnet-5", alias="LLM_MODEL_ESCALATION")
     llm_model_light: str = Field("claude-haiku-4-5-20251001", alias="LLM_MODEL_LIGHT")

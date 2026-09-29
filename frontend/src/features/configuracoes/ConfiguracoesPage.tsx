@@ -42,7 +42,7 @@ function FormGeral({ inicial, gastoMes }: { inicial: Schemas["ConfiguracoesOut"]
   const salvar = useMutation({
     mutationFn: () => {
       const corpo: Partial<Schemas["ConfiguracoesOut"]> = { ...c };
-      delete corpo.modelos_disponiveis;
+      delete corpo.modelos_agentes;
       return ok(api.PATCH("/api/organizacao/configuracoes", { body: corpo }));
     },
     onSuccess: () => {
@@ -51,7 +51,6 @@ function FormGeral({ inicial, gastoMes }: { inicial: Schemas["ConfiguracoesOut"]
     },
     onError: (e) => toast.error(mensagemErro(e)),
   });
-  const modelos = c.modelos_disponiveis.map((m) => ({ valor: m, rotulo: m }));
   const num = (k: keyof Schemas["ConfiguracoesOut"]) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setC({ ...c, [k]: e.target.value === "" ? null : Number(e.target.value) });
   return (
@@ -74,12 +73,17 @@ function FormGeral({ inicial, gastoMes }: { inicial: Schemas["ConfiguracoesOut"]
       </Painel>
       <Painel className="grid gap-4 p-5 sm:grid-cols-2">
         <h2 className="text-base sm:col-span-2">Modelos de IA</h2>
-        <p className="-mt-2 text-xs text-tinta-3 sm:col-span-2">O modelo de segundo parecer também faz a investigação jurídica de cada família (uma vez por código). O modelo leve levanta os fatos explícitos na descrição dos itens.</p>
-        <Campo rotulo="Identificação (julgamento principal)"><Select aria-label="Modelo principal" valor={c.modelo_principal ?? "_"} aoMudar={(v) => setC({ ...c, modelo_principal: v === "_" ? null : v })} opcoes={[{ valor: "_", rotulo: "Padrão do servidor" }, ...modelos]} /></Campo>
-        <Campo rotulo="Segundo parecer e investigação jurídica"><Select aria-label="Modelo de escalonamento" valor={c.modelo_escalonamento ?? "_"} aoMudar={(v) => setC({ ...c, modelo_escalonamento: v === "_" ? null : v })} opcoes={[{ valor: "_", rotulo: "Padrão do servidor" }, ...modelos]} /></Campo>
-        <Campo rotulo="Modelo leve (fatos da descrição e abreviações)"><Select aria-label="Modelo leve" valor={c.modelo_leve ?? "_"} aoMudar={(v) => setC({ ...c, modelo_leve: v === "_" ? null : v })} opcoes={[{ valor: "_", rotulo: "Padrão do servidor" }, ...modelos]} /></Campo>
-        <label className="flex items-center gap-3 self-end text-sm"><Switch checked={c.usar_modelo_leve} onCheckedChange={(v) => setC({ ...c, usar_modelo_leve: v })} /> Usar modelo leve para expandir abreviações</label>
-        <Campo rotulo="Usar lote (Batch API) a partir de N itens" htmlFor="lote" ajuda="Lotes custam 50% menos e levam até 24 h."><Input id="lote" type="number" min={1} value={c.lote_min_itens ?? ""} placeholder="padrão do servidor" onChange={num("lote_min_itens")} /></Campo>
+        <p className="-mt-2 text-xs text-tinta-3 sm:col-span-2">O modelo de cada agente é escolhido pelo administrador da plataforma (tela “Modelos de IA”) e vale para todas as organizações. Modelos em uso agora:</p>
+        <dl className="grid gap-1 text-sm sm:col-span-2 sm:grid-cols-2">
+          {Object.entries(c.modelos_agentes).map(([agente, modelo]) => (
+            <div key={agente} className="flex justify-between gap-3 rounded-md border border-regua px-3 py-1.5">
+              <dt className="text-tinta-3">{agente}</dt>
+              <dd className="font-medium">{modelo}</dd>
+            </div>
+          ))}
+        </dl>
+        <label className="flex items-center gap-3 self-end text-sm"><Switch checked={c.usar_modelo_leve} onCheckedChange={(v) => setC({ ...c, usar_modelo_leve: v })} /> Usar IA para decifrar abreviações desconhecidas</label>
+        <Campo rotulo="Usar lote (Batch API) a partir de N itens" htmlFor="lote" ajuda="Lotes custam 50% menos e levam até 24 h (só modelos Claude; os demais saem em tempo real)."><Input id="lote" type="number" min={1} value={c.lote_min_itens ?? ""} placeholder="padrão do servidor" onChange={num("lote_min_itens")} /></Campo>
       </Painel>
       <Painel className="grid gap-4 p-5 sm:grid-cols-2">
         <h2 className="text-base sm:col-span-2">Orçamento e retenção</h2>

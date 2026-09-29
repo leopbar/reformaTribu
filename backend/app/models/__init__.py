@@ -14,6 +14,7 @@ from app.models.audit import (
     UploadedFile,
 )
 from app.models.audit_log import AuditLog
+from app.models.ia import LlmAgent, LlmModel, LlmProvider
 from app.models.reference import (
     CClassTribCode,
     CClassTribCorrelacao,
@@ -56,8 +57,11 @@ __all__ = [
     "ItemReview",
     "LegalProvision",
     "LegalRule",
+    "LlmAgent",
     "LlmBatch",
     "LlmCall",
+    "LlmModel",
+    "LlmProvider",
     "MappingTemplate",
     "Membership",
     "NbsNode",

@@ -12,8 +12,8 @@ from typing import Any
 from sqlalchemy import select
 
 from app.analise import fatos as fatos_mod
-from app.config import get_settings
 from app.db.session import TenantContext, sync_tenant_session
+from app.llm import catalogo as catalogo_ia
 from app.models import Abbreviation, Audit, Company, ConditionAttribute, OrgSettings, RefSnapshot
 from app.rules.engine import ConjuntoRegras
 
@@ -37,7 +37,7 @@ class Contexto:
     limiar_escalonamento: float
     modelo_principal: str
     modelo_escalonamento: str
-    modelo_leve: str
+    modelo_leve: str  # abreviações (Arrumador)
     usar_modelo_leve: bool
     esforco_principal: str
     esforco_escalonamento: str
@@ -48,6 +48,9 @@ class Contexto:
     dossie: dict[str, str] = field(default_factory=dict)
     modelo_investigacao: str = ""
     esforco_investigacao: str = "high"
+    modelo_fatos: str = ""  # Leitor de fatos
+    modelo_navegador: str = ""  # busca guiada pela árvore da NCM/NBS
+    esforco_navegador: str = "medium"
     cenario: str = "venda_consumidor"
     prompts: dict[str, str] = field(default_factory=dict)  # versões de prompt (avaliação de variantes)
     carregado_em: float = field(default_factory=time.monotonic)
@@ -69,7 +72,7 @@ def carregar_contexto(audit_id: uuid.UUID, org_id: uuid.UUID, forcar: bool = Fal
     c = _CACHE.get(audit_id)
     if c is not None and not forcar and time.monotonic() - c.carregado_em < _TTL_S:
         return c
-    s = get_settings()
+    agentes = catalogo_ia.agentes_configurados()
     with sync_tenant_session(TenantContext.sistema(org_id)) as sess:
         audit = sess.get(Audit, audit_id)
         if audit is None or audit.snapshot_id is None:
@@ -92,6 +95,16 @@ def carregar_contexto(audit_id: uuid.UUID, org_id: uuid.UUID, forcar: bool = Fal
         }
         regras = ConjuntoRegras.carregar(sess, snap.regras_aprovadas, snap.regras_pendentes)
         conf = audit.configuracao or {}
+        # Modelos congelados no início da auditoria; auditorias antigas usam as chaves legadas.
+        modelos_conf: dict[str, str] = conf.get("modelos") or {}
+        esforcos_conf: dict[str, str] = conf.get("esforcos") or {}
+
+        def modelo(agente: str, legado: str = "") -> str:
+            return modelos_conf.get(agente) or (conf.get(legado) if legado else None) or agentes[agente]["modelo"]
+
+        def esforco(agente: str, legado: str) -> str:
+            return esforcos_conf.get(agente) or conf.get(legado) or agentes[agente]["esforco"]
+
         ctx = Contexto(
             org_id=org_id,
             audit_id=audit_id,
@@ -113,19 +126,22 @@ def carregar_contexto(audit_id: uuid.UUID, org_id: uuid.UUID, forcar: bool = Fal
             limiar_confirmado=float(conf.get("limiar_confirmado", cfg.limiar_confirmado or Decimal("0.9"))),
             limiar_corrigido=float(conf.get("limiar_corrigido", cfg.limiar_corrigido or Decimal("0.85"))),
             limiar_escalonamento=float(conf.get("limiar_escalonamento", cfg.limiar_escalonamento or Decimal("0.8"))),
-            modelo_principal=conf.get("modelo_principal") or cfg.modelo_principal or s.llm_model_primary,
-            modelo_escalonamento=conf.get("modelo_escalonamento") or cfg.modelo_escalonamento or s.llm_model_escalation,
-            modelo_leve=cfg.modelo_leve or s.llm_model_light,
+            modelo_principal=modelo("identificador", "modelo_principal"),
+            modelo_escalonamento=modelo("segundo_parecer", "modelo_escalonamento"),
+            modelo_leve=modelo("abreviacoes"),
             usar_modelo_leve=bool(cfg.usar_modelo_leve),
-            esforco_principal=conf.get("esforco_principal") or s.llm_effort_primary,
-            esforco_escalonamento=conf.get("esforco_escalonamento") or s.llm_effort_escalation,
+            esforco_principal=esforco("identificador", "esforco_principal"),
+            esforco_escalonamento=esforco("segundo_parecer", "esforco_escalonamento"),
             is_exige_analise=bool(conf.get("imposto_seletivo_exige_analise", cfg.imposto_seletivo_exige_analise)),
             prompts=dict(conf.get("prompts") or {}),
             snapshot_id=snap.id,
             versoes_normas=list((snap.completude or {}).get("normas_versoes") or []),
             dossie=dossie,
-            modelo_investigacao=conf.get("modelo_investigacao") or cfg.modelo_escalonamento or s.llm_model_escalation,
-            esforco_investigacao=conf.get("esforco_investigacao") or s.llm_effort_investigation,
+            modelo_investigacao=modelo("jurista", "modelo_investigacao"),
+            esforco_investigacao=esforco("jurista", "esforco_investigacao"),
+            modelo_fatos=modelo("leitor_fatos", "modelo_fatos"),
+            modelo_navegador=modelo("navegador", "modelo_principal"),
+            esforco_navegador=esforco("navegador", "esforco_principal"),
         )
     _CACHE[audit_id] = ctx
     return ctx

@@ -25,9 +25,11 @@ from app.core.errors import AppError, Conflito, NaoEncontrado
 from app.core.rbac import Perm
 from app.core.redis import redis_async
 from app.events.bus import canal_auditoria
+from app.ingest import estimate
 from app.ingest.mapping import CAMPOS, assinatura_colunas, sugerir_mapeamento, validar_mapeamento
 from app.ingest.reader import ArquivoInvalido, ler_planilha
-from app.llm.gateway import ChaveAPIAusente, cliente
+from app.llm import catalogo
+from app.llm.gateway import ChaveAPIAusente, verificar_chaves
 from app.models import (
     Audit,
     AuditItem,
@@ -299,6 +301,19 @@ async def _carregar_auditoria(session: AsyncSession, principal: Principal, audit
     return a
 
 
+def estimativa_atual(a: Audit) -> dict[str, Any]:
+    """Antes de iniciar, a estimativa acompanha os modelos escolhidos agora em "Modelos de IA"."""
+    est = a.estimativa or {}
+    previsao = (a.problemas_resumo or {}).get("previsao_ia")
+    if a.status not in (StatusAuditoria.PRONTA, StatusAuditoria.PAUSADA_ORCAMENTO, StatusAuditoria.FALHOU):
+        return est
+    if not previsao or a.iniciado_em is not None:
+        return est
+    taxa = est.get("taxa_escalonamento") or (est.get("tempo_real") or {}).get("taxa_escalonamento") or 0.4
+    limite = est.get("limite_lote") or (est.get("tempo_real") or {}).get("limite_lote") or 200
+    return estimate.estimativas(previsao, float(taxa), int(limite))
+
+
 async def _saida(session: AsyncSession, a: Audit, principal: Principal) -> AuditoriaOut:
     empresa = await session.get(Company, a.company_id)
     arquivo = await session.get(UploadedFile, a.file_id) if a.file_id else None
@@ -320,7 +335,7 @@ async def _saida(session: AsyncSession, a: Audit, principal: Principal) -> Audit
         arquivo=arquivo.nome_original if arquivo else None,
         mapeamento=a.mapeamento,
         problemas_resumo=a.problemas_resumo or {},
-        estimativa=a.estimativa or {},
+        estimativa=await run_in_threadpool(estimativa_atual, a),
         tokens=a.tokens or {},
         configuracao=a.configuracao or {},
         erro=a.erro,
@@ -474,19 +489,21 @@ async def iniciar_auditoria(
     a = await _carregar_auditoria(session, principal, audit_id)
     if a.status not in (StatusAuditoria.PRONTA, StatusAuditoria.PAUSADA_ORCAMENTO, StatusAuditoria.FALHOU):
         raise Conflito("Esta auditoria não pode ser iniciada no estado atual.")
+    agentes = await run_in_threadpool(catalogo.agentes_configurados)
+    modelos = {k: v["modelo"] for k, v in agentes.items()}
     try:
-        await run_in_threadpool(cliente)
+        await run_in_threadpool(verificar_chaves, [m for k, m in modelos.items() if k != "abreviacoes"])
     except ChaveAPIAusente as e:
         raise AppError(
             str(e),
-            acao="Peça ao administrador do servidor para configurar ANTHROPIC_API_KEY.",
+            acao="Peça ao superadministrador para cadastrar a chave em Chaves de API ou trocar o modelo.",
             status_code=503,
             codigo="ia_indisponivel",
         ) from e
-    s = get_settings()
     cfg = await session.get(OrgSettings, principal.org_id) or OrgSettings(org_id=principal.org_id)
-    modo = dados.modo or (a.estimativa or {}).get("modo_recomendado") or "tempo_real"
-    estimativa = (a.estimativa or {}).get(modo, {})
+    estimativas = await run_in_threadpool(estimativa_atual, a)
+    modo = dados.modo or estimativas.get("modo_recomendado") or "tempo_real"
+    estimativa = estimativas.get(modo, {})
     previsto = float(estimativa.get("custo_usd_estimado", 0))
     if cfg.orcamento_mensal_usd is not None:
         gasto = await gasto_mes(session, principal.org_id)  # type: ignore[arg-type]
@@ -502,14 +519,11 @@ async def iniciar_auditoria(
     a.status = StatusAuditoria.PROCESSANDO
     a.erro = None
     a.iniciado_em = a.iniciado_em or datetime.now(UTC)
+    a.estimativa = estimativas
+    # Os modelos ficam congelados na auditoria: trocar em "Modelos de IA" não muda uma auditoria em andamento.
     a.configuracao = {
-        "modelo_principal": cfg.modelo_principal or s.llm_model_primary,
-        "modelo_escalonamento": cfg.modelo_escalonamento or s.llm_model_escalation,
-        "esforco_principal": s.llm_effort_primary,
-        "esforco_escalonamento": s.llm_effort_escalation,
-        "modelo_investigacao": cfg.modelo_escalonamento or s.llm_model_escalation,
-        "modelo_fatos": cfg.modelo_leve or s.llm_model_light,
-        "esforco_investigacao": s.llm_effort_investigation,
+        "modelos": modelos,
+        "esforcos": {k: v["esforco"] for k, v in agentes.items()},
         "limiar_escalonamento": float(cfg.limiar_escalonamento or 0.8),
         "aprovacao_automatica": cfg.aprovacao_automatica,
         "imposto_seletivo_exige_analise": cfg.imposto_seletivo_exige_analise,

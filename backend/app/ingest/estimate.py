@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.llm import catalogo
 from app.llm.pricing import custo_chamada
 from app.llm.prompts import carregar
 from app.models import AuditItem, LlmCall
@@ -18,7 +20,7 @@ USUARIO_PRINCIPAL = 1600
 SAIDA_PRINCIPAL = 1400  # inclui raciocínio adaptativo
 USUARIO_ESCALONAMENTO = 2100
 SAIDA_ESCALONAMENTO = 2600
-TAXA_ESCALONAMENTO_PADRAO = 0.2
+TAXA_ESCALONAMENTO_PADRAO = 0.4  # piloto de supermercado: cerca de metade dos itens
 # Investigação jurídica por família (uma por código NCM/NBS): pacote de evidências grande, saída longa.
 USUARIO_INVESTIGACAO = 8000
 SAIDA_INVESTIGACAO = 5000
@@ -26,8 +28,13 @@ SAIDA_INVESTIGACAO = 5000
 USUARIO_FATOS = 700
 SAIDA_FATOS = 250
 TAXA_ITENS_COM_FATOS = 0.3
-# Parte dos itens com NCM/NBS válido que a busca confirma sem IA (o código é o mais provável).
-TAXA_CONFIRMACAO_SEM_IA = 0.6
+# Busca guiada pela árvore oficial (itens sem código): 2 a 3 passos curtos por item.
+USUARIO_NAVEGACAO = 2500
+SAIDA_NAVEGACAO = 350
+PASSOS_NAVEGACAO = 3
+# Parte dos itens com NCM/NBS válido que a busca confirma sem IA (o NCM do ERP em 1º nas duas buscas).
+# Medido no piloto de supermercado: quase nunca acontece com a busca atual.
+TAXA_CONFIRMACAO_SEM_IA = 0.1
 # Itens sem código válido: a IA sugere um código; muitos caem em famílias já vistas.
 TAXA_FAMILIAS_SEM_CODIGO = 0.7
 
@@ -52,30 +59,63 @@ def taxa_escalonamento_historica(session: Session, org_id: Any) -> float:
     return min(1.0, (esc or 0) / total)
 
 
+def _custo_agente(modelo: str, chamadas: int, usuario: int, saida: int, sistema: int, lote: bool) -> Decimal:
+    """A 1ª chamada escreve o bloco de sistema no cache; as demais o leem."""
+    if chamadas <= 0:
+        return Decimal(0)
+    primeira = custo_chamada(modelo, usuario, saida, sistema, 0, lote)
+    demais = custo_chamada(modelo, usuario, saida, 0, sistema, lote) * (chamadas - 1)
+    return primeira + demais
+
+
 def estimar(
-    n_com_ia: int,
-    modelo_principal: str,
-    modelo_escalonamento: str,
+    previsao: dict[str, Any],
     taxa_escalonamento: float,
     lote: bool,
-    familias: int = 0,
-    modelo_investigacao: str | None = None,
-    modelo_leve: str | None = None,
-    previsao: dict[str, Any] | None = None,
+    modelos: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    sp, se = _tokens_sistema("julgar_coerencia"), _tokens_sistema("escalar")
-    si, sf = _tokens_sistema("investigar_enquadramento"), _tokens_sistema("extrair_fatos")
-    modelo_investigacao = modelo_investigacao or modelo_escalonamento
-    n_fatos = math.ceil(n_com_ia * TAXA_ITENS_COM_FATOS)
+    """Custo e tempo previstos, com o preço do modelo escolhido para cada agente (tela "Modelos de IA").
+
+    O lote dá 50% de desconto só nos modelos que têm Batch API (Anthropic); os demais saem em tempo real.
+    """
+    modelos = modelos or {k: v["modelo"] for k, v in catalogo.agentes_configurados().items()}
+    n_com_ia = int(previsao.get("itens_com_ia") or 0)
+    familias = int(previsao.get("familias_novas") or 0)
     n_esc = math.ceil(n_com_ia * taxa_escalonamento)
-    # 1ª chamada escreve o cache; as demais leem.
-    custo_p = (
-        custo_chamada(modelo_principal, USUARIO_PRINCIPAL, SAIDA_PRINCIPAL, sp, 0, lote) if n_com_ia else 0
-    ) + custo_chamada(modelo_principal, USUARIO_PRINCIPAL, SAIDA_PRINCIPAL, 0, sp, lote) * max(0, n_com_ia - 1)
-    custo_e = custo_chamada(modelo_escalonamento, USUARIO_ESCALONAMENTO, SAIDA_ESCALONAMENTO, 0, se, lote) * n_esc
-    custo_i = custo_chamada(modelo_investigacao, USUARIO_INVESTIGACAO, SAIDA_INVESTIGACAO, 0, si, lote) * familias
-    custo_f = custo_chamada(modelo_leve, USUARIO_FATOS, SAIDA_FATOS, 0, sf, lote) * n_fatos if modelo_leve else 0
-    total = float(custo_p + custo_e + custo_i + custo_f)
+    n_fatos = math.ceil(n_com_ia * TAXA_ITENS_COM_FATOS)
+    n_nav = PASSOS_NAVEGACAO * int(previsao.get("sem_codigo_valido") or 0)
+    plano = [
+        ("identificador", n_com_ia, USUARIO_PRINCIPAL, SAIDA_PRINCIPAL, "julgar_coerencia"),
+        ("segundo_parecer", n_esc, USUARIO_ESCALONAMENTO, SAIDA_ESCALONAMENTO, "escalar"),
+        ("navegador", n_nav, USUARIO_NAVEGACAO, SAIDA_NAVEGACAO, "navegar_arvore"),
+        ("jurista", familias, USUARIO_INVESTIGACAO, SAIDA_INVESTIGACAO, "investigar_enquadramento"),
+        ("leitor_fatos", n_fatos, USUARIO_FATOS, SAIDA_FATOS, "extrair_fatos"),
+    ]
+    agentes: list[dict[str, Any]] = []
+    total = Decimal(0)
+    entrada_total = saida_total = 0
+    for agente, chamadas, usuario, saida, prompt in plano:
+        modelo = modelos.get(agente) or catalogo.AGENTES[agente]["padrao"]
+        info = catalogo.info_modelo(modelo)
+        com_lote = lote and catalogo.suporta_lote(modelo)
+        sistema = _tokens_sistema(prompt)
+        custo = _custo_agente(modelo, chamadas, usuario, saida, sistema, com_lote)
+        total += custo
+        entrada_total += chamadas * (usuario + sistema)
+        saida_total += chamadas * saida
+        agentes.append(
+            {
+                "agente": agente,
+                "nome": catalogo.AGENTES[agente]["nome"],
+                "modelo": modelo,
+                "modelo_nome": info.nome if info else modelo,
+                "provedor": catalogo.provedor_de(modelo),
+                "chamadas": chamadas,
+                "custo_usd": round(float(custo), 4),
+                "lote": com_lote,
+            }
+        )
+    sem_lote = sorted({a["modelo_nome"] for a in agentes if lote and not a["lote"] and a["chamadas"]})
     s = get_settings()
     if lote:
         tempo_min = (30, 24 * 60)
@@ -84,30 +124,37 @@ def estimar(
         seg = n_com_ia * 9 / 4 + n_esc * 14 / 4 + familias * 45 / 4  # 4 processos em paralelo
         tempo_min = (max(1, math.ceil(seg / 60 * 0.7)), max(1, math.ceil(seg / 60 * 1.5)))
         texto_tempo = f"Cerca de {tempo_min[0]} a {tempo_min[1]} minutos."
+    total_f = float(total)
     return {
         "itens_com_ia": n_com_ia,
         "escalonamentos_estimados": n_esc,
         "familias_estimadas": familias,
         "taxa_escalonamento": round(taxa_escalonamento, 3),
-        "tokens_entrada_estimados": n_com_ia * (USUARIO_PRINCIPAL + sp)
-        + n_esc * (USUARIO_ESCALONAMENTO + se)
-        + familias * (USUARIO_INVESTIGACAO + si),
-        "tokens_saida_estimados": n_com_ia * SAIDA_PRINCIPAL
-        + n_esc * SAIDA_ESCALONAMENTO
-        + familias * SAIDA_INVESTIGACAO,
-        "custo_usd_estimado": round(total, 2),
-        "custo_usd_faixa": [round(total * 0.6, 2), round(total * 1.6, 2)],
+        "tokens_entrada_estimados": entrada_total,
+        "tokens_saida_estimados": saida_total,
+        "custo_usd_estimado": round(total_f, 2),
+        "custo_usd_faixa": [round(total_f * 0.6, 2), round(total_f * 1.6, 2)],
         "modo": "lote" if lote else "tempo_real",
         "limite_lote": s.llm_batch_min_itens,
         "tempo_minutos": list(tempo_min),
         "tempo_texto": texto_tempo,
-        "modelos": {
-            "principal": modelo_principal,
-            "escalonamento": modelo_escalonamento,
-            "investigacao": modelo_investigacao,
-        },
-        "previsao": previsao or {},
+        "agentes": agentes,
+        "modelos": {a["agente"]: a["modelo"] for a in agentes},
+        "sem_lote": sem_lote,
+        "previsao": previsao,
         "observacao": "Estimativa aproximada. O custo real de cada chamada é registrado e exibido durante a auditoria.",
+    }
+
+
+def estimativas(previsao: dict[str, Any], taxa: float, limite_lote: int) -> dict[str, Any]:
+    """As duas opções (tempo real e lote) com os modelos atuais de cada agente."""
+    modelos = {k: v["modelo"] for k, v in catalogo.agentes_configurados().items()}
+    return {
+        "tempo_real": estimar(previsao, taxa, lote=False, modelos=modelos),
+        "lote": estimar(previsao, taxa, lote=True, modelos=modelos),
+        "modo_recomendado": "lote" if int(previsao.get("itens_com_ia") or 0) >= limite_lote else "tempo_real",
+        "taxa_escalonamento": taxa,
+        "limite_lote": limite_lote,
     }
 
 

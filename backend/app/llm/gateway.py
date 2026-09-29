@@ -1,10 +1,10 @@
-"""Gateway único para a API do Claude.
+"""Gateway único para as plataformas de IA (Anthropic, OpenAI, DeepSeek).
 
 - Toda chamada é registrada em `llm_calls` com chave de idempotência: se o mesmo nó do mesmo
   item já tem resposta, ela é reutilizada e nada é cobrado de novo.
-- Tempo real: Messages API com retentativas (backoff exponencial com jitter).
-- Lote: a requisição fica "na fila" e é enviada pela tarefa coletora para a Message Batches API.
-- Saídas sempre estruturadas (`output_config.format` com JSON Schema) e validadas com Pydantic.
+- Tempo real: a plataforma do modelo (`provedores.py`) com retentativas (backoff exponencial com jitter).
+- Lote: só modelos da Anthropic (Message Batches API); os demais saem em tempo real.
+- Saídas sempre estruturadas e validadas com Pydantic, qualquer que seja o modelo.
 - Somente descrição, códigos e atributos do item são enviados ao modelo. Nada de dados pessoais.
 """
 
@@ -16,7 +16,6 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from functools import lru_cache
 from typing import Any
 
 import anthropic
@@ -27,7 +26,7 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.db.session import TenantContext, sync_reference_admin_session, sync_tenant_session
-from app.llm import budget
+from app.llm import budget, catalogo, provedores
 from app.llm.pricing import custo_chamada
 from app.llm.prompts import Prompt
 from app.models import LlmCall
@@ -61,27 +60,12 @@ class RequisicaoLLM:
     plataforma: bool = False  # chamadas da base de referência (sem organização)
 
     def params(self) -> dict[str, Any]:
-        """Parâmetros da Messages API. O bloco de sistema é estável e fica em cache."""
-        return {
-            "model": self.modelo,
-            "max_tokens": self.max_tokens,
-            "system": [{"type": "text", "text": self.prompt.texto, "cache_control": {"type": "ephemeral"}}],
-            "messages": [
-                {
-                    "role": "user",
-                    "content": orjson.dumps(self.conteudo_usuario, option=orjson.OPT_SORT_KEYS).decode(),
-                }
-            ],
-            "output_config": {
-                "format": {"type": "json_schema", "schema": self.schema},
-                **({"effort": self.esforco} if suporta_esforco(self.modelo) else {}),
-            },
-        }
+        """Parâmetros da Messages API (usados pelo lote, que só existe para a Anthropic)."""
+        return provedores.params_anthropic(self)
 
 
-def suporta_esforco(modelo: str) -> bool:
-    """O parâmetro `effort` não existe nos modelos Haiku (a API recusa a requisição)."""
-    return "haiku" not in modelo
+def suporta_lote(modelo: str) -> bool:
+    return catalogo.suporta_lote(modelo)
 
 
 @dataclass
@@ -94,16 +78,61 @@ class ResultadoLLM:
     prompt_versao: str
 
 
-@lru_cache
 def cliente() -> anthropic.Anthropic:
-    s = get_settings()
-    if s.anthropic_api_key is None or not s.anthropic_api_key.get_secret_value():
+    """Cliente da Anthropic (lote e chamadas em tempo real de modelos Claude)."""
+    try:
+        return provedores.cliente_anthropic()
+    except provedores.SemChave as e:
+        raise ChaveAPIAusente(str(e)) from e
+
+
+cliente.cache_clear = provedores._cliente_anthropic.cache_clear  # type: ignore[attr-defined]
+
+
+def verificar_chaves(modelos_usados: list[str]) -> None:
+    """Falha cedo (antes de iniciar a auditoria) se falta a chave de alguma plataforma necessária."""
+    faltando = sorted(
+        {
+            catalogo.PROVEDORES.get(p, {}).get("nome", p)
+            for p in {catalogo.provedor_de(m) for m in modelos_usados}
+            if not catalogo.credencial(p)[0]
+        }
+    )
+    if faltando:
         raise ChaveAPIAusente(
-            "A chave da API da Anthropic não está configurada (ANTHROPIC_API_KEY). "
-            "Nenhuma análise por IA pode ser feita até que ela seja definida no servidor."
+            "Falta a chave de API de: " + ", ".join(faltando) + ". Nenhuma análise por IA pode ser feita "
+            "até que o superadministrador a cadastre em Chaves de API."
         )
-    # Retentativas próprias (abaixo) controlam backoff e registro; o SDK não repete sozinho.
-    return anthropic.Anthropic(api_key=s.anthropic_api_key.get_secret_value(), timeout=s.llm_timeout_s, max_retries=0)
+
+
+def _chamar(req: RequisicaoLLM) -> dict[str, Any]:
+    """Uma chamada à plataforma do modelo. Modelos Claude passam por `cliente()` (substituível nos testes)."""
+    if catalogo.provedor_de(req.modelo) != "anthropic":
+        try:
+            return provedores.chamar(req)
+        except provedores.SemChave as e:
+            raise ChaveAPIAusente(str(e)) from e
+    api = cliente()
+    try:
+        resp = api.messages.create(**req.params())
+    except (anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APIConnectionError) as e:
+        raise provedores.ErroTransitorio(f"{type(e).__name__}: {e}", _retry_after(e)) from e
+    except anthropic.APIStatusError as e:
+        if e.status_code in (408, 409, 429) or e.status_code >= 500:
+            raise provedores.ErroTransitorio(f"{type(e).__name__}: {e}", _retry_after(e)) from e
+        raise provedores.ErroDefinitivo(f"{type(e).__name__}: {e}") from e
+    mensagem: dict[str, Any] = resp.to_dict()
+    mensagem["_request_id"] = getattr(resp, "_request_id", None)
+    return mensagem
+
+
+def _retry_after(e: Exception) -> float | None:
+    resp = getattr(e, "response", None)
+    try:
+        ra = resp.headers.get("retry-after") if resp is not None else None
+        return min(float(ra), 120.0) if ra else None
+    except (ValueError, AttributeError):
+        return None
 
 
 def _sessao(req: RequisicaoLLM) -> Any:
@@ -116,7 +145,9 @@ def _extrair_json(conteudo: list[Any]) -> dict[str, Any]:
     for bloco in conteudo:
         tipo = bloco.get("type") if isinstance(bloco, dict) else getattr(bloco, "type", None)
         if tipo == "text":
-            texto = bloco["text"] if isinstance(bloco, dict) else bloco.text
+            texto = (bloco["text"] if isinstance(bloco, dict) else bloco.text).strip()
+            if texto.startswith("```"):  # alguns modelos embrulham o JSON em bloco de código
+                texto = texto.strip("`").removeprefix("json").strip()
             return orjson.loads(texto)  # type: ignore[no-any-return]
     raise FalhaIA("A resposta do modelo não trouxe conteúdo estruturado.")
 
@@ -183,7 +214,11 @@ def chamar_tempo_real(req: RequisicaoLLM) -> ResultadoLLM:
     if isinstance(existente, ResultadoLLM):
         return existente
     s = get_settings()
-    api = cliente()
+    # Sem chave, falha antes de registrar a chamada (a auditoria para com uma mensagem clara).
+    if catalogo.provedor_de(req.modelo) == "anthropic":
+        cliente()
+    else:
+        verificar_chaves([req.modelo])
 
     if req.org_id and not req.plataforma:
         with _sessao(req) as sess:
@@ -218,23 +253,13 @@ def chamar_tempo_real(req: RequisicaoLLM) -> ResultadoLLM:
     for tentativa in range(1, s.llm_max_tentativas + 1):
         tentativas = tentativa
         try:
-            resp = api.messages.create(**req.params())
-            mensagem = resp.to_dict()
-            mensagem["_request_id"] = getattr(resp, "_request_id", None)
+            mensagem = _chamar(req)
             break
-        except (
-            anthropic.RateLimitError,
-            anthropic.InternalServerError,
-            anthropic.APIConnectionError,
-            anthropic.APITimeoutError,
-        ) as e:
+        except provedores.ErroTransitorio as e:
             ultimo_erro = e
-        except anthropic.APIStatusError as e:
-            if e.status_code in (408, 409, 429) or e.status_code >= 500:
-                ultimo_erro = e
-            else:
-                ultimo_erro = e
-                break
+        except provedores.ErroDefinitivo as e:
+            ultimo_erro = e
+            break
         espera = _espera(tentativa, ultimo_erro)
         log.warning(
             "llm_retentativa",
@@ -256,7 +281,7 @@ def chamar_tempo_real(req: RequisicaoLLM) -> ResultadoLLM:
         if mensagem is None:
             call.status = StatusChamadaLLM.FALHOU
             call.erro = f"{type(ultimo_erro).__name__}: {str(ultimo_erro)[:500]}"
-            falha = FalhaIA("Não foi possível obter resposta do modelo após várias tentativas.")
+            falha = FalhaIA(_mensagem_falha(ultimo_erro))
         else:
             call.request_id = mensagem.get("_request_id")
             registrar_resposta(call, mensagem, lote=False)
@@ -313,12 +338,16 @@ def _resumo_requisicao(req: RequisicaoLLM) -> dict[str, Any]:
     }
 
 
+def _mensagem_falha(erro: Exception | None) -> str:
+    texto = str(erro or "").lower()
+    if "credit balance" in texto or "insufficient_quota" in texto or "insufficient balance" in texto:
+        return "A plataforma de IA recusou por falta de créditos. Recarregue os créditos e reanalise o item."
+    if isinstance(erro, provedores.ErroDefinitivo) and ("401" in texto or "authentication" in texto):
+        return "A plataforma de IA recusou a chave de API. Confira a chave em Chaves de API."
+    return "Não foi possível obter resposta do modelo após várias tentativas."
+
+
 def _espera(tentativa: int, erro: Exception | None) -> float:
-    if isinstance(erro, anthropic.APIStatusError):
-        ra = erro.response.headers.get("retry-after") if erro.response is not None else None
-        if ra:
-            try:
-                return min(float(ra), 120.0) + random.uniform(0, 1)
-            except ValueError:
-                pass
+    if isinstance(erro, provedores.ErroTransitorio) and erro.espera_s:
+        return erro.espera_s + random.uniform(0, 1)
     return float(min(2**tentativa, 60)) + random.uniform(0, 1.5)

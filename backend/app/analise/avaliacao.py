@@ -203,6 +203,15 @@ def _identidade(ent: EntradaAvaliacao) -> tuple[Dimensao, Dimensao]:
         motivo = idt.get("motivo") or "não foi possível identificar o item com segurança"
         return Dimensao("identificacao", FALHA, motivo[:300]), Dimensao("codigo_fiscal", FALHA, "sem código definido")
     concordam = bool(idt.get("segundo_parecer") and idt.get("concordancia"))
+    if idt.get("via_arvore"):
+        # Código achado pela busca guiada na árvore oficial: um ponto de partida para o contador confirmar.
+        cod = idt.get("codigo_formatado") or idt.get("codigo")
+        texto = f"NCM/NBS sugerido pela busca na tabela oficial ({cod}); confirme antes de usar"
+        situacao = FALHA if conf < 0.4 else ATENCAO
+        return (
+            Dimensao("identificacao", situacao, (idt.get("entendimento") or texto)[:300]),
+            Dimensao("codigo_fiscal", ATENCAO, texto),
+        )
     if idt.get("descricao_suficiente") is False:
         d_id = Dimensao(
             "identificacao", ATENCAO, ("descrição incompleta: " + "; ".join(duvidas))[:300] or "descrição incompleta"
@@ -246,6 +255,20 @@ def _rotulo_ref(r: dict[str, Any], ref: str) -> str:
     if r.get("tipo") == "cclasstrib":
         return f"tabela cClassTrib {ref.removeprefix('T')}"
     return f"precedente aprovado ({r.get('dispositivo') or ref})"
+
+
+def _cclasstrib_citados(conflito: dict[str, Any], ent: EntradaAvaliacao) -> set[str]:
+    """cClassTrib que o conflito põe em disputa: os declarados, os das referências e os citados no texto."""
+    saida = {str(x) for x in conflito.get("cclasstrib_em_jogo") or []}
+    for ref in conflito.get("refs") or []:
+        r = ent.refs.get(ref) or {}
+        if r.get("cclasstrib"):
+            saida.add(str(r["cclasstrib"]))
+        elif ref.startswith("T") and ref[1:].isdigit():
+            saida.add(ref[1:])
+    texto = conflito.get("descricao") or ""
+    saida |= {c for c in ent.cclasstrib if c in texto}
+    return saida
 
 
 def _texto_fatos(fatos: dict[str, dict[str, Any]], usados: list[str]) -> str:
@@ -382,10 +405,25 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
     refs_escolhida = {f.get("ref") for f in (escolhida or {}).get("fundamentos", [])}
     cct = av.cclasstrib or ""
     relevantes, sobre_is, informativos = [], [], []
+    # cClassTrib que a própria tabela oficial veda para este código não disputam o enquadramento.
+    vedados = {
+        str(r.get("cclasstrib"))
+        for r in ent.refs.values()
+        if r.get("tipo") == "correlacao" and str(r.get("permissao") or "").upper() == "VEDADO"
+    }
     for c in tese.get("conflitos", []):
         texto, refs = c.get("descricao") or "", set(c.get("refs") or [])
-        if escolhida is not None and (refs & refs_escolhida or (cct and cct in texto) or f"T{cct}" in refs):
-            relevantes.append(texto)
+        if c.get("muda_resultado") is False:
+            informativos.append(texto)  # o próprio Jurista diz que não muda o cClassTrib
+            continue
+        em_jogo = _cclasstrib_citados(c, ent)
+        toca = escolhida is not None and (
+            bool(refs & refs_escolhida) or (bool(cct) and (cct in texto or cct in em_jogo)) or f"T{cct}" in refs
+        )
+        if toca and (em_jogo - {cct} - vedados):
+            relevantes.append(texto)  # aponta outro cClassTrib possível: só o especialista decide
+        elif toca:
+            informativos.append(texto)  # fontes coerentes com a conclusão: não muda o resultado
         elif refs & refs_is or "seletivo" in texto.lower():
             sobre_is.append(texto)
         else:

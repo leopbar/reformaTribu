@@ -815,6 +815,218 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/teses/{tese_id}/refazer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refazer Tese
+         * @description Refaz o parecer desta família com o modelo atual do Jurista (gera custo de IA).
+         */
+        post: operations["refazer_tese_api_teses__tese_id__refazer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auditorias/{audit_id}/teses/refazer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refazer Teses Auditoria
+         * @description Refaz todos os pareceres usados por esta auditoria com o modelo atual do Jurista.
+         */
+        post: operations["refazer_teses_auditoria_api_auditorias__audit_id__teses_refazer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/itens/{item_id}/caminho": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Caminho Item
+         * @description Por quais agentes o item passou, quais pulou e o que cada um fez (ao vivo durante o processamento).
+         */
+        get: operations["caminho_item_api_itens__item_id__caminho_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auditorias/{audit_id}/fluxo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fluxo Auditoria
+         * @description Quantos itens passaram por cada agente, quantos estão lá agora e quanto cada um custou.
+         */
+        get: operations["fluxo_auditoria_api_auditorias__audit_id__fluxo_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ia/provedores": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Listar Provedores */
+        get: operations["listar_provedores_api_ia_provedores_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ia/provedores/{provedor}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Salvar Provedor
+         * @description Cadastra ou troca a chave (guardada cifrada; nunca devolvida), ativa/desativa e ajusta o endereço.
+         */
+        put: operations["salvar_provedor_api_ia_provedores__provedor__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ia/provedores/{provedor}/testar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Testar Provedor
+         * @description Confere a chave (a informada ou a cadastrada) listando os modelos da plataforma. Não gasta tokens.
+         */
+        post: operations["testar_provedor_api_ia_provedores__provedor__testar_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ia/modelos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Listar Modelos */
+        get: operations["listar_modelos_api_ia_modelos_get"];
+        put?: never;
+        /**
+         * Criar Modelo
+         * @description Cadastra um modelo que ainda não está no catálogo (ex.: lançamento novo de uma plataforma).
+         */
+        post: operations["criar_modelo_api_ia_modelos_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ia/modelos/{modelo}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Salvar Modelo */
+        put: operations["salvar_modelo_api_ia_modelos__modelo__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ia/agentes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Listar Agentes */
+        get: operations["listar_agentes_api_ia_agentes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ia/agentes/{agente}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Salvar Agente
+         * @description Escolhe o modelo do agente. Vale para as próximas auditorias (as em andamento mantêm o seu).
+         */
+        put: operations["salvar_agente_api_ia_agentes__agente__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auditorias/{audit_id}/exportacoes": {
         parameters: {
             query?: never;
@@ -1297,6 +1509,41 @@ export interface components {
             /** Ativo */
             ativo?: boolean | null;
         };
+        /** AgenteIn */
+        AgenteIn: {
+            /** Modelo */
+            modelo: string;
+            /**
+             * Esforco
+             * @default medium
+             */
+            esforco: string;
+        };
+        /** AgenteOut */
+        AgenteOut: {
+            /** Agente */
+            agente: string;
+            /** Nome */
+            nome: string;
+            /** Funcao */
+            funcao: string;
+            /** Exige */
+            exige: string;
+            /** Modelo */
+            modelo: string;
+            /** Esforco */
+            esforco: string;
+            /** Esforcos */
+            esforcos: string[];
+            /** Recomendados */
+            recomendados: components["schemas"]["OpcaoModelo"][];
+            /** Outros */
+            outros: components["schemas"]["OpcaoModelo"][];
+            /** Atualizado Por */
+            atualizado_por: string | null;
+            /** Updated At */
+            updated_at: string | null;
+        };
         /** AlterarSenhaIn */
         AlterarSenhaIn: {
             /** Senha Atual */
@@ -1540,6 +1787,51 @@ export interface components {
             /** Arquivo */
             arquivo: string;
         };
+        /** CaixaResumo */
+        CaixaResumo: {
+            /**
+             * Passaram
+             * @default 0
+             */
+            passaram: number;
+            /**
+             * Agora
+             * @default 0
+             */
+            agora: number;
+            /**
+             * Custo Usd
+             * @default 0
+             */
+            custo_usd: number;
+            /**
+             * Chamadas
+             * @default 0
+             */
+            chamadas: number;
+            /**
+             * Destaques
+             * @default []
+             */
+            destaques: {
+                [key: string]: string;
+            }[];
+        };
+        /** CaminhoOut */
+        CaminhoOut: {
+            /** Item Id */
+            item_id: string;
+            /** Status */
+            status: string;
+            /** Em Andamento */
+            em_andamento: boolean;
+            /** Caixa Atual */
+            caixa_atual: string | null;
+            /** Passos */
+            passos: components["schemas"]["PassoOut"][];
+            /** Custo Usd */
+            custo_usd: number;
+        };
         /** CampoOut */
         CampoOut: {
             /** Chave */
@@ -1597,12 +1889,6 @@ export interface components {
             limiar_corrigido?: number | null;
             /** Limiar Escalonamento */
             limiar_escalonamento?: number | null;
-            /** Modelo Principal */
-            modelo_principal?: string | null;
-            /** Modelo Escalonamento */
-            modelo_escalonamento?: string | null;
-            /** Modelo Leve */
-            modelo_leve?: string | null;
             /** Usar Modelo Leve */
             usar_modelo_leve?: boolean | null;
             /** Orcamento Mensal Usd */
@@ -1628,12 +1914,6 @@ export interface components {
             limiar_corrigido: number;
             /** Limiar Escalonamento */
             limiar_escalonamento: number;
-            /** Modelo Principal */
-            modelo_principal: string | null;
-            /** Modelo Escalonamento */
-            modelo_escalonamento: string | null;
-            /** Modelo Leve */
-            modelo_leve: string | null;
             /** Usar Modelo Leve */
             usar_modelo_leve: boolean;
             /** Orcamento Mensal Usd */
@@ -1648,8 +1928,10 @@ export interface components {
             aprovacao_automatica: boolean;
             /** Retencao Arquivos Dias */
             retencao_arquivos_dias: number;
-            /** Modelos Disponiveis */
-            modelos_disponiveis: string[];
+            /** Modelos Agentes */
+            modelos_agentes: {
+                [key: string]: string;
+            };
         };
         /** DecisaoOut */
         DecisaoOut: {
@@ -1948,6 +2230,36 @@ export interface components {
              */
             created_at: string;
         };
+        /** FluxoOut */
+        FluxoOut: {
+            /** Status */
+            status: string;
+            /** Modo */
+            modo: string | null;
+            /** Ao Vivo */
+            ao_vivo: boolean;
+            /** Total */
+            total: number;
+            /** Concluidos */
+            concluidos: number;
+            /** Custo Usd */
+            custo_usd: number;
+            /** Caixas */
+            caixas: {
+                [key: string]: components["schemas"]["CaixaResumo"];
+            };
+            /** Resultados */
+            resultados: {
+                [key: string]: number;
+            };
+            /**
+             * Modelos
+             * @default {}
+             */
+            modelos: {
+                [key: string]: string;
+            };
+        };
         /**
          * FonteReferencia
          * @enum {string}
@@ -2200,6 +2512,58 @@ export interface components {
                 [key: string]: unknown;
             }[];
         };
+        /** ModeloIAOut */
+        ModeloIAOut: {
+            /** Modelo */
+            modelo: string;
+            /** Provedor */
+            provedor: string;
+            /** Provedor Nome */
+            provedor_nome: string;
+            /** Nome */
+            nome: string;
+            /** Preco Entrada */
+            preco_entrada: number;
+            /** Preco Saida */
+            preco_saida: number;
+            /** Preco Cache Leitura */
+            preco_cache_leitura: number;
+            /** Mult Cache Escrita */
+            mult_cache_escrita: number;
+            /** Suporta Lote */
+            suporta_lote: boolean;
+            /** Suporta Esforco */
+            suporta_esforco: boolean;
+            /** Ativo */
+            ativo: boolean;
+            /** Notas */
+            notas: string | null;
+            /** Em Uso Por */
+            em_uso_por: string[];
+            /** Plataforma Pronta */
+            plataforma_pronta: boolean;
+        };
+        /** ModeloIn */
+        ModeloIn: {
+            /** Nome */
+            nome?: string | null;
+            /** Preco Entrada */
+            preco_entrada?: number | null;
+            /** Preco Saida */
+            preco_saida?: number | null;
+            /** Preco Cache Leitura */
+            preco_cache_leitura?: number | null;
+            /** Mult Cache Escrita */
+            mult_cache_escrita?: number | null;
+            /** Suporta Lote */
+            suporta_lote?: boolean | null;
+            /** Suporta Esforco */
+            suporta_esforco?: boolean | null;
+            /** Ativo */
+            ativo?: boolean | null;
+            /** Notas */
+            notas?: string | null;
+        };
         /** ModeloMapeamentoOut */
         ModeloMapeamentoOut: {
             /**
@@ -2263,6 +2627,56 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** NovoModeloIn */
+        NovoModeloIn: {
+            /** Nome */
+            nome: string;
+            /** Preco Entrada */
+            preco_entrada: number;
+            /** Preco Saida */
+            preco_saida: number;
+            /** Preco Cache Leitura */
+            preco_cache_leitura?: number | null;
+            /** Mult Cache Escrita */
+            mult_cache_escrita?: number | null;
+            /** Suporta Lote */
+            suporta_lote?: boolean | null;
+            /** Suporta Esforco */
+            suporta_esforco?: boolean | null;
+            /** Ativo */
+            ativo?: boolean | null;
+            /** Notas */
+            notas?: string | null;
+            /** Modelo */
+            modelo: string;
+            /** Provedor */
+            provedor: string;
+        };
+        /** OpcaoModelo */
+        OpcaoModelo: {
+            /** Modelo */
+            modelo: string;
+            /** Nome */
+            nome: string;
+            /** Provedor */
+            provedor: string;
+            /** Provedor Nome */
+            provedor_nome: string;
+            /** Posicao */
+            posicao: number | null;
+            /** Motivo */
+            motivo: string | null;
+            /** Preco Entrada */
+            preco_entrada: number;
+            /** Preco Saida */
+            preco_saida: number;
+            /** Custo 1000 Chamadas */
+            custo_1000_chamadas: number;
+            /** Disponivel */
+            disponivel: boolean;
+            /** Aviso */
+            aviso: string | null;
         };
         /** OpcoesLayout */
         OpcoesLayout: {
@@ -2391,6 +2805,25 @@ export interface components {
          * @enum {string}
          */
         Papel: "administrador" | "revisor" | "operador" | "leitura";
+        /** PassoOut */
+        PassoOut: {
+            /** Caixa */
+            caixa: string;
+            /** Situacao */
+            situacao: string;
+            /** Resumo */
+            resumo: string;
+            /** Detalhes */
+            detalhes: {
+                [key: string]: string;
+            }[];
+            /** Ia */
+            ia: {
+                [key: string]: unknown;
+            } | null;
+            /** Proximo */
+            proximo: string | null;
+        };
         /** PendenciaOut */
         PendenciaOut: {
             /**
@@ -2468,6 +2901,79 @@ export interface components {
             problemas: {
                 [key: string]: string;
             }[];
+        };
+        /** ProvedorIn */
+        ProvedorIn: {
+            /** Chave */
+            chave?: string | null;
+            /**
+             * Remover Chave
+             * @default false
+             */
+            remover_chave: boolean;
+            /** Ativo */
+            ativo?: boolean | null;
+            /** Base Url */
+            base_url?: string | null;
+        };
+        /** ProvedorOut */
+        ProvedorOut: {
+            /** Provedor */
+            provedor: string;
+            /** Nome */
+            nome: string;
+            /** Ativo */
+            ativo: boolean;
+            /** Tem Chave */
+            tem_chave: boolean;
+            /** Chave Final */
+            chave_final: string | null;
+            /** Chave No Servidor */
+            chave_no_servidor: boolean;
+            /** Base Url */
+            base_url: string;
+            /** Base Url Padrao */
+            base_url_padrao: string;
+            /** Testado Em */
+            testado_em: string | null;
+            /** Teste Ok */
+            teste_ok: boolean | null;
+            /** Teste Mensagem */
+            teste_mensagem: string | null;
+            /** Lote */
+            lote: string;
+            /** Site */
+            site: string;
+            /** Modelos Ativos */
+            modelos_ativos: number;
+            /** Atualizado Por */
+            atualizado_por: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** RefazerIn */
+        RefazerIn: {
+            /**
+             * Audit Id
+             * Format: uuid
+             */
+            audit_id: string;
+        };
+        /** RefazerOut */
+        RefazerOut: {
+            /** Teses */
+            teses: number;
+            /** Itens */
+            itens: number;
+            /** Aprovados Mantidos */
+            aprovados_mantidos: number;
+            /** Modelo */
+            modelo: string;
+            /** Mensagem */
+            mensagem: string;
         };
         /**
          * RegimeTributario
@@ -2787,6 +3293,18 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+        };
+        /** TesteIn */
+        TesteIn: {
+            /** Chave */
+            chave?: string | null;
+        };
+        /** TesteOut */
+        TesteOut: {
+            /** Ok */
+            ok: boolean;
+            /** Mensagem */
+            mensagem: string;
         };
         /**
          * TipoOrganizacao
@@ -4583,6 +5101,367 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DossieDecisao"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refazer_tese_api_teses__tese_id__refazer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tese_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RefazerIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RefazerOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refazer_teses_auditoria_api_auditorias__audit_id__teses_refazer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                audit_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RefazerOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    caminho_item_api_itens__item_id__caminho_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaminhoOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fluxo_auditoria_api_auditorias__audit_id__fluxo_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                audit_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FluxoOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listar_provedores_api_ia_provedores_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProvedorOut"][];
+                };
+            };
+        };
+    };
+    salvar_provedor_api_ia_provedores__provedor__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provedor: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProvedorIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProvedorOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    testar_provedor_api_ia_provedores__provedor__testar_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provedor: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TesteIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TesteOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listar_modelos_api_ia_modelos_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModeloIAOut"][];
+                };
+            };
+        };
+    };
+    criar_modelo_api_ia_modelos_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NovoModeloIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModeloIAOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    salvar_modelo_api_ia_modelos__modelo__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                modelo: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModeloIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModeloIAOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listar_agentes_api_ia_agentes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgenteOut"][];
+                };
+            };
+        };
+    };
+    salvar_agente_api_ia_agentes__agente__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agente: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgenteIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgenteOut"][];
                 };
             };
             /** @description Validation Error */

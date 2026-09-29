@@ -48,6 +48,9 @@ class ItemState(BaseModel):
     llm_calls: list[str] = Field(default_factory=list)
     falha_ia: str | None = None
 
+    # navegar_arvore (busca guiada pela árvore oficial, para itens sem código)
+    arvore: dict[str, Any] | None = None
+
     # identidade consolidada (código escolhido)
     tipo_codigo_final: str | None = None
     codigo_final: str | None = None

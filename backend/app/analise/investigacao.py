@@ -1,7 +1,9 @@
 """Investigação jurídica por família: chave da tese, conteúdo enviado ao modelo e validação da resposta.
 
-A investigação é feita uma vez por família (mesmo código + cenário + dossiê + data + base) e
-reaproveitada por todos os itens dela, inclusive em auditorias seguintes da mesma empresa.
+A investigação é feita uma vez por família (mesmo código + cenário + dossiê + data + material jurídico)
+e reaproveitada por todos os itens dela, inclusive em auditorias seguintes da organização. A chave usa
+o CONTEÚDO do material que o Jurista lê, não a versão da base: uma nova coleta das tabelas oficiais com
+o mesmo texto para o código não refaz a tese; uma mudança real na lei ou na tabela desse código refaz.
 """
 
 from __future__ import annotations
@@ -18,6 +20,19 @@ from app.analise.fatos import chave
 CENARIOS = {"venda_consumidor": "Venda comum de mercadoria ou serviço ao consumidor final (NFC-e/NF-e/NFS-e)."}
 
 
+# Campos dos alertas que o Jurista lê (outros campos só servem ao filtro da avaliação).
+_CAMPOS_ALERTA = ("regra", "descricao", "gravidade", "cclasstrib")
+
+
+def impressao_evidencias(pacote: dict[str, Any]) -> str:
+    """Impressão digital do material jurídico da família (o que vai ao modelo, sem metadados)."""
+    p = dict(pacote)
+    p["alertas_de_divergencia"] = [
+        {k: a.get(k) for k in _CAMPOS_ALERTA} for a in pacote.get("alertas_de_divergencia") or []
+    ]
+    return hashlib.sha256(orjson.dumps(p, option=orjson.OPT_SORT_KEYS)).hexdigest()
+
+
 def chave_familia(
     *,
     company_id: str,
@@ -25,10 +40,11 @@ def chave_familia(
     codigo: str,
     cenario: str,
     data_referencia: date,
-    snapshot_id: str,
+    evidencias: str,
     dossie: dict[str, str],
-    prompt: str,
 ) -> str:
+    """A versão do prompt não entra na chave: melhorar as instruções não refaz pareceres já guardados
+    (para refazer, use "Refazer com o modelo atual")."""
     bruto = orjson.dumps(
         {
             "e": company_id,
@@ -36,9 +52,8 @@ def chave_familia(
             "c": codigo,
             "s": cenario,
             "d": data_referencia.isoformat(),
-            "b": snapshot_id,
+            "m": evidencias,
             "f": dossie,
-            "p": prompt,
         },
         option=orjson.OPT_SORT_KEYS,
     )

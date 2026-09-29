@@ -20,7 +20,7 @@ from app.core.deps import Principal, PrincipalDep, SessionDep, exigir
 from app.core.errors import Conflito, NaoEncontrado
 from app.core.rbac import Perm
 from app.core.security import hash_senha, validar_forca_senha, verificar_senha
-from app.llm.pricing import MODELOS_SUPORTADOS
+from app.llm import catalogo
 from app.models import (
     AuditLog,
     Company,
@@ -72,9 +72,6 @@ class ConfiguracoesOut(BaseModel):
     limiar_confirmado: float
     limiar_corrigido: float
     limiar_escalonamento: float
-    modelo_principal: str | None
-    modelo_escalonamento: str | None
-    modelo_leve: str | None
     usar_modelo_leve: bool
     orcamento_mensal_usd: float | None
     alerta_orcamento_pct: int
@@ -82,7 +79,8 @@ class ConfiguracoesOut(BaseModel):
     imposto_seletivo_exige_analise: bool
     aprovacao_automatica: bool
     retencao_arquivos_dias: int
-    modelos_disponiveis: list[str]
+    # Modelo de cada agente de IA (definido pelo superadministrador em "Modelos de IA"; só leitura aqui).
+    modelos_agentes: dict[str, str]
 
 
 class OrganizacaoOut(BaseModel):
@@ -97,9 +95,6 @@ class ConfiguracoesIn(BaseModel):
     limiar_confirmado: float | None = Field(None, ge=0.5, le=1)
     limiar_corrigido: float | None = Field(None, ge=0.5, le=1)
     limiar_escalonamento: float | None = Field(None, ge=0, le=1)
-    modelo_principal: str | None = None
-    modelo_escalonamento: str | None = None
-    modelo_leve: str | None = None
     usar_modelo_leve: bool | None = None
     orcamento_mensal_usd: float | None = Field(None, ge=0)
     alerta_orcamento_pct: int | None = Field(None, ge=10, le=100)
@@ -109,12 +104,13 @@ class ConfiguracoesIn(BaseModel):
     retencao_arquivos_dias: int | None = Field(None, ge=0, le=3650)
     nome: str | None = Field(None, min_length=2, max_length=200)
 
-    @field_validator("modelo_principal", "modelo_escalonamento", "modelo_leve")
-    @classmethod
-    def _modelo(cls, v: str | None) -> str | None:
-        if v and v not in MODELOS_SUPORTADOS:
-            raise ValueError("Modelo não suportado. Escolha um dos modelos listados.")
-        return v or None
+
+def _modelos_agentes() -> dict[str, str]:
+    infos = catalogo.modelos()
+    return {
+        catalogo.AGENTES[k]["nome"]: infos[v["modelo"]].nome if v["modelo"] in infos else v["modelo"]
+        for k, v in catalogo.agentes_configurados().items()
+    }
 
 
 def _config_out(cfg: OrgSettings) -> ConfiguracoesOut:
@@ -122,9 +118,6 @@ def _config_out(cfg: OrgSettings) -> ConfiguracoesOut:
         limiar_confirmado=float(cfg.limiar_confirmado),
         limiar_corrigido=float(cfg.limiar_corrigido),
         limiar_escalonamento=float(cfg.limiar_escalonamento),
-        modelo_principal=cfg.modelo_principal,
-        modelo_escalonamento=cfg.modelo_escalonamento,
-        modelo_leve=cfg.modelo_leve,
         usar_modelo_leve=cfg.usar_modelo_leve,
         orcamento_mensal_usd=float(cfg.orcamento_mensal_usd) if cfg.orcamento_mensal_usd is not None else None,
         alerta_orcamento_pct=cfg.alerta_orcamento_pct,
@@ -132,7 +125,7 @@ def _config_out(cfg: OrgSettings) -> ConfiguracoesOut:
         imposto_seletivo_exige_analise=cfg.imposto_seletivo_exige_analise,
         aprovacao_automatica=cfg.aprovacao_automatica,
         retencao_arquivos_dias=cfg.retencao_arquivos_dias,
-        modelos_disponiveis=sorted(MODELOS_SUPORTADOS),
+        modelos_agentes=_modelos_agentes(),
     )
 
 
