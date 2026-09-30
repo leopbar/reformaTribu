@@ -1,16 +1,17 @@
 /** Componentes do domínio: status, códigos, confiança, motivos, estados vazios e de erro. */
-import { AlertTriangle, CheckCircle2, CircleDashed, Clock3, FileWarning, PenLine, SearchX, Stamp, XCircle } from "lucide-react";
+import { CheckCircle2, CircleDashed, CircleHelp, Clock3, FileWarning, MinusCircle, Scale, SearchX, Stamp, UserCheck, XCircle } from "lucide-react";
 import type { ReactNode } from "react";
 import { ApiError } from "@/api/client";
 import { cn } from "@/lib/utils";
-import { fmtCodigo, fmtPct } from "@/lib/format";
+import { fmtCodigo } from "@/lib/format";
 import { Button, Dica } from "./ui/primitives";
 
 // -------------------------------------------------------------------------------- status --
 export const STATUS = {
-  confirmado: { rotulo: "Confirmado", icone: CheckCircle2, cor: "text-conferido", fundo: "bg-conferido-suave", borda: "border-conferido/40" },
-  corrigido: { rotulo: "Corrigido", icone: PenLine, cor: "text-caneta", fundo: "bg-caneta-suave", borda: "border-caneta/40" },
-  analise_humana: { rotulo: "Análise humana", icone: AlertTriangle, cor: "text-ocre", fundo: "bg-ocre-suave", borda: "border-ocre/40" },
+  classificado: { rotulo: "Classificado", icone: CheckCircle2, cor: "text-conferido", fundo: "bg-conferido-suave", borda: "border-conferido/40" },
+  aguardando_informacao: { rotulo: "Aguardando informação", icone: CircleHelp, cor: "text-ocre", fundo: "bg-ocre-suave", borda: "border-ocre/40" },
+  revisao_contador: { rotulo: "Revisão do contador", icone: UserCheck, cor: "text-caneta", fundo: "bg-caneta-suave", borda: "border-caneta/40" },
+  revisao_especialista: { rotulo: "Revisão do especialista", icone: Scale, cor: "text-perigo", fundo: "bg-perigo-suave", borda: "border-perigo/40" },
   pendente: { rotulo: "Na fila", icone: Clock3, cor: "text-tinta-3", fundo: "bg-superficie-2", borda: "border-regua" },
   processando: { rotulo: "Processando", icone: CircleDashed, cor: "text-tinta-2", fundo: "bg-superficie-2", borda: "border-regua" },
   erro: { rotulo: "Erro", icone: XCircle, cor: "text-perigo", fundo: "bg-perigo-suave", borda: "border-perigo/40" },
@@ -44,7 +45,13 @@ export const REVISAO = {
   rejeitado: { rotulo: "Rejeitado", cor: "text-perigo" },
 } as const;
 
-export function SeloRevisao({ status }: { status: string }) {
+export function SeloRevisao({ status, automatico }: { status: string; automatico?: boolean }) {
+  if (status === "aprovado" && automatico)
+    return (
+      <span className="inline-flex items-center gap-1 text-2xs font-semibold uppercase tracking-wide text-conferido">
+        <Stamp className="size-3.5" aria-hidden /> Aprovado automaticamente
+      </span>
+    );
   if (status === "aprovado")
     return (
       <span className="inline-flex items-center gap-1 text-2xs font-semibold uppercase tracking-wide text-conferido">
@@ -66,51 +73,70 @@ export function Codigo({ tipo, valor, className }: { tipo?: string | null; valor
 }
 
 // ------------------------------------------------------------------------------ confiança --
-export function Confianca({
-  valor,
-  componentes,
-  className,
-}: {
-  valor: number | null | undefined;
-  componentes?: Record<string, number> | null;
-  className?: string;
-}) {
-  if (valor == null) return <span className="text-tinta-3">—</span>;
-  const tom = valor >= 0.9 ? "bg-conferido" : valor >= 0.75 ? "bg-caneta" : "bg-ocre";
-  const barra = (
-    <span className={cn("inline-flex items-center gap-2", className)}>
-      <span className="relative h-1.5 w-12 overflow-hidden rounded-full bg-superficie-3" aria-hidden>
-        <span className={cn("absolute inset-y-0 left-0", tom)} style={{ width: `${valor * 100}%` }} />
-      </span>
-      <span className="num text-xs text-tinta-2">{fmtPct(valor)}</span>
-    </span>
-  );
-  if (!componentes) return barra;
-  const nomes: Record<string, string> = {
-    modelo: "Modelo de IA",
-    busca: "Posição na busca",
-    concordancia: "Concordância entre etapas",
-    regra: "Certeza da regra legal",
-    descricao: "Qualidade da descrição",
-    estrutura: "Validade do código atual",
-  };
+export const CONFIANCA: Record<string, { rotulo: string; cor: string; ajuda: string }> = {
+  alta: { rotulo: "Alta", cor: "text-conferido", ajuda: "Todas as dimensões foram confirmadas." },
+  media: { rotulo: "Média", cor: "text-caneta", ajuda: "Alguma dimensão pede conferência de uma pessoa." },
+  incompleta: { rotulo: "Incompleta", cor: "text-ocre", ajuda: "Falta uma informação que muda o enquadramento." },
+  baixa: { rotulo: "Baixa", cor: "text-perigo", ajuda: "Há falha em alguma dimensão (identificação, regra ou fonte)." },
+};
+
+/** Confiança explicável: um nível em palavras, nunca um número solto. */
+export function ConfiancaGlobal({ valor, className }: { valor: string | null | undefined; className?: string }) {
+  const c = valor ? CONFIANCA[valor] : undefined;
+  if (!c) return <span className="text-tinta-3">—</span>;
+  const barras = { alta: 3, media: 2, incompleta: 1, baixa: 1 }[valor as "alta"] ?? 0;
   return (
-    <Dica
-      texto={
-        <span className="flex flex-col gap-0.5">
-          {Object.entries(nomes).map(([k, n]) => (
-            <span key={k} className="flex justify-between gap-4">
-              <span>{n}</span>
-              <span className="num">{fmtPct(componentes[k] ?? 0)}</span>
-            </span>
+    <Dica texto={c.ajuda}>
+      <span tabIndex={0} className={cn("inline-flex items-center gap-1.5 text-xs font-medium", c.cor, className)}>
+        <span className="flex items-end gap-0.5" aria-hidden>
+          {[1, 2, 3].map((n) => (
+            <span key={n} className={cn("w-1 rounded-sm", n <= barras ? "bg-current" : "bg-superficie-3")} style={{ height: 4 + n * 3 }} />
           ))}
         </span>
-      }
-    >
-      <span tabIndex={0}>{barra}</span>
+        {c.rotulo}
+      </span>
     </Dica>
   );
 }
+
+export const SITUACAO_DIMENSAO: Record<string, { rotulo: string; icone: typeof CheckCircle2; cor: string }> = {
+  ok: { rotulo: "Confirmado", icone: CheckCircle2, cor: "text-conferido" },
+  atencao: { rotulo: "Conferir", icone: UserCheck, cor: "text-caneta" },
+  pendente: { rotulo: "Falta informação", icone: CircleHelp, cor: "text-ocre" },
+  falha: { rotulo: "Não confirmado", icone: XCircle, cor: "text-perigo" },
+  nao_aplicavel: { rotulo: "Não se aplica", icone: MinusCircle, cor: "text-tinta-3" },
+};
+
+/** Relatório de confiança por dimensão (identificação, código, regra, fonte...). */
+export function RelatorioConfianca({ dimensoes }: { dimensoes: { chave?: string; rotulo: string; situacao: string; texto: string }[] }) {
+  return (
+    <ul className="divide-y divide-regua rounded-md border border-regua">
+      {dimensoes.map((d) => {
+        const s = SITUACAO_DIMENSAO[d.situacao] ?? SITUACAO_DIMENSAO.nao_aplicavel!;
+        const I = s.icone;
+        return (
+          <li key={d.chave ?? d.rotulo} className="grid grid-cols-[10.5rem_1fr] gap-3 px-3 py-2 text-sm">
+            <span className="flex items-center gap-1.5 font-medium">
+              <I className={cn("size-4 shrink-0", s.cor)} aria-hidden />
+              {d.rotulo}
+            </span>
+            <span className="text-xs text-tinta-2">
+              <span className={cn("mr-1.5 font-medium", s.cor)}>{s.rotulo}</span>
+              {d.texto}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+export const ORIGEM_FATO: Record<string, string> = {
+  usuario: "informado por pessoa",
+  erp: "planilha do ERP",
+  descricao: "explícito na descrição",
+  cadastro: "cadastro da empresa",
+};
 
 // -------------------------------------------------------------------------------- motivo --
 export function Motivo({ codigo, textos }: { codigo: string; textos?: Record<string, string[]> }) {

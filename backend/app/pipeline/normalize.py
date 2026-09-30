@@ -96,3 +96,23 @@ def inferir_tipo(tipo_informado: str | None, ncm: str | None, nbs: str | None, d
     if re.search(r"\b\d+\s*(ml|l|kg|g|gr|mg|un|cx|pct)\b", d):
         return "produto"
     return "desconhecido"
+
+
+def _sem_acento(t: str) -> str:
+    return unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().lower()
+
+
+def remover_marca(texto: str, marca: str | None) -> str:
+    """Tira a marca comercial da descrição: marca não define NCM, e itens iguais de marcas diferentes
+    passam a ter a mesma análise (uma única chamada de IA para todos)."""
+    alvo = re.findall(r"[a-z0-9]+", _sem_acento(marca or ""))
+    if not alvo or " ".join(alvo) in ("sem marca", "diversos", "producao propria", "marca propria"):
+        return texto
+    palavras = texto.split()
+    base = [" ".join(re.findall(r"[a-z0-9]+", _sem_acento(w))) for w in palavras]
+    n = len(alvo)
+    for i in range(len(base) - n + 1):
+        if base[i : i + n] == alvo:
+            restante = palavras[:i] + palavras[i + n :]
+            return " ".join(restante) or texto
+    return texto

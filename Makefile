@@ -33,9 +33,10 @@ migrate:  ## Aplica as migrações e prepara o checkpoint do LangGraph
 bootstrap:  ## Cria o primeiro superadministrador (BOOTSTRAP_ADMIN_EMAIL no .env)
 	$(API) python -m app.cli bootstrap-admin
 
-seed-reference:  ## Importa as fontes oficiais (NCM, NBS, cClassTrib, LC 214) e o dicionário
+seed-reference:  ## Importa as fontes oficiais (NCM, NBS, cClassTrib, LC 214, atos da reforma) e o dicionário
 	$(API) python -m app.cli seed-dicionario
 	$(API) python -m app.cli seed-reference
+	$(API) python -m app.cli seed-normas
 
 seed-dicionario:
 	$(API) python -m app.cli seed-dicionario

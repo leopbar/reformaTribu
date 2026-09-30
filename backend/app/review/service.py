@@ -1,6 +1,6 @@
-"""Revisão humana: aprovar, editar (com recálculo do enquadramento), responder perguntas, rejeitar,
-desfazer e aprovar em lote. Toda decisão gera um registro imutável em item_reviews e alimenta a
-memória aprovada da empresa."""
+"""Revisão humana: aprovar, corrigir o código, informar fatos, definir o enquadramento manualmente,
+rejeitar, desfazer e aprovar em lote. Toda decisão gera um registro imutável em item_reviews, versiona
+o perfil tributário e alimenta a memória aprovada da empresa."""
 
 from __future__ import annotations
 
@@ -13,21 +13,20 @@ from typing import Any
 from sqlalchemy import and_, select, true, update
 from sqlalchemy.orm import Session
 
+from app.analise import aplicacao
+from app.analise import fatos as fatos_mod
 from app.core.errors import Conflito, NaoEncontrado
 from app.ingest.cleaning import hash_descricao
-from app.models import (
-    ApprovedMemory,
-    Audit,
-    AuditItem,
-    CClassTribCode,
-    Company,
-    ItemReview,
-    RefSnapshot,
+from app.models import ApprovedMemory, Audit, AuditItem, CClassTribCode, ItemReview, RefSnapshot
+from app.models.enums import (
+    STATUS_REVISAVEIS,
+    AcaoRevisao,
+    EscopoFato,
+    OrigemFato,
+    StatusItem,
+    StatusRevisao,
 )
-from app.models.enums import AcaoRevisao, StatusItem, StatusRevisao
 from app.reference.search import obter_no
-from app.rules.engine import ConjuntoRegras
-from app.rules.engine import enquadrar as aplicar_regras
 
 
 @dataclass(frozen=True)
@@ -59,6 +58,12 @@ CAMPOS_FOTO = (
     "revisado_em",
     "imposto_seletivo",
     "regras_consideradas",
+    "hipotese",
+    "conclusao",
+    "nivel_revisao",
+    "confianca_global",
+    "aprovado_automaticamente",
+    "is_situacao",
 )
 
 
@@ -125,9 +130,18 @@ def _registrar(
     return r
 
 
-def _salvar_memoria(session: Session, item: AuditItem, audit: Audit, review: ItemReview, revisor: Revisor) -> None:
-    if not item.final_codigo or not item.final_tipo_codigo:
-        return
+def _memoria(
+    session: Session,
+    item: AuditItem,
+    audit: Audit,
+    review: ItemReview,
+    revisor: Revisor,
+    *,
+    tipo_codigo: str,
+    codigo: str,
+    cst: str | None,
+    cclasstrib: str | None,
+) -> None:
     h = hash_descricao(item.descricao_normalizada or item.descricao)
     session.execute(
         update(ApprovedMemory)
@@ -145,10 +159,10 @@ def _salvar_memoria(session: Session, item: AuditItem, audit: Audit, review: Ite
             gtin=item.gtin,
             descricao_normalizada=item.descricao_normalizada or item.descricao,
             descricao_hash=h,
-            tipo_codigo=item.final_tipo_codigo,
-            codigo=item.final_codigo,
-            cst=item.final_cst,
-            cclasstrib=item.final_cclasstrib,
+            tipo_codigo=tipo_codigo,
+            codigo=codigo,
+            cst=cst,
+            cclasstrib=cclasstrib,
             atributos=item.atributos or {},
             review_id=review.id,
             audit_id=audit.id,
@@ -166,80 +180,43 @@ def _aprovar_um(
     comentario: str | None,
     lote_id: uuid.UUID | None = None,
 ) -> ItemReview:
-    if item.revisao_status == StatusRevisao.APROVADO:
+    if item.revisao_status == StatusRevisao.APROVADO and not item.aprovado_automaticamente:
         raise Conflito("Este item já foi aprovado.")
-    if item.status in (StatusItem.PENDENTE, StatusItem.PROCESSANDO):
-        raise Conflito("O item ainda está em processamento.")
+    if item.status not in STATUS_REVISAVEIS:
+        raise Conflito("O item ainda está em processamento ou terminou com erro.")
     if not item.codigo_sugerido or not item.cclasstrib_sugerido or item.perguntas:
         raise Conflito(
             "Não há classificação completa para aprovar.",
-            acao="Responda às perguntas pendentes ou edite o código e o enquadramento antes de aprovar.",
+            acao="Responda às perguntas pendentes ou corrija o código e o enquadramento antes de aprovar.",
         )
     antes = foto(item)
-    agora = datetime.now(UTC)
     item.revisao_status = StatusRevisao.APROVADO
+    item.aprovado_automaticamente = False
     item.final_tipo_codigo, item.final_codigo = item.tipo_codigo_sugerido, item.codigo_sugerido
     item.final_cst, item.final_cclasstrib = item.cst_sugerido, item.cclasstrib_sugerido
     item.final_regra_id, item.final_dispositivo = item.regra_id, item.dispositivo_legal
-    item.revisado_por, item.revisado_em = revisor.user_id, agora
+    item.revisado_por, item.revisado_em = revisor.user_id, datetime.now(UTC)
     review = _registrar(session, item, AcaoRevisao.APROVAR, antes, revisor, comentario, lote_id)
-    _salvar_memoria(session, item, audit, review, revisor)
+    _memoria(
+        session,
+        item,
+        audit,
+        review,
+        revisor,
+        tipo_codigo=item.final_tipo_codigo or "ncm",
+        codigo=item.final_codigo or "",
+        cst=item.final_cst,
+        cclasstrib=item.final_cclasstrib,
+    )
+    aplicacao.versionar_perfil(
+        session, item, audit, registro={"revisao": review.id.hex, "revisor": revisor.email}, motivo="aprovado"
+    )
     return review
 
 
 def aprovar(session: Session, item_id: uuid.UUID, revisor: Revisor, comentario: str | None = None) -> ItemReview:
     item, audit = _carregar(session, item_id)
     return _aprovar_um(session, item, audit, revisor, comentario)
-
-
-def _conjunto(session: Session, audit: Audit) -> tuple[ConjuntoRegras, RefSnapshot]:
-    snap = session.get(RefSnapshot, audit.snapshot_id)
-    if snap is None:
-        raise Conflito("A auditoria não tem snapshot da base de referência.")
-    return ConjuntoRegras.carregar(session, snap.regras_aprovadas, snap.regras_pendentes), snap
-
-
-def recalcular_enquadramento(session: Session, item: AuditItem, audit: Audit) -> None:
-    conjunto, _ = _conjunto(session, audit)
-    empresa = session.get(Company, item.company_id)
-    assert empresa is not None
-    r = aplicar_regras(
-        conjunto,
-        item.tipo_codigo_sugerido or "ncm",
-        item.codigo_sugerido or "",
-        f"{item.descricao} {item.descricao_normalizada or ''}",
-        {
-            "item": item.atributos or {},
-            "empresa": {
-                "regime_tributario": empresa.regime_tributario,
-                "uf": empresa.uf,
-                "cnae": empresa.cnae,
-                **(empresa.atributos or {}),
-            },
-            "operacao": audit.contexto_operacao or {},
-        },
-        audit.data_referencia,
-    )
-    item.cst_sugerido, item.cclasstrib_sugerido = r.cst, r.cclasstrib
-    item.regra_id = r.regra.id if r.regra else None
-    item.tipo_tratamento, item.dispositivo_legal = r.tipo_tratamento, r.dispositivo
-    item.perguntas = [p.como_dict() for p in r.perguntas]
-    item.regras_consideradas = r.consideradas
-    item.imposto_seletivo = r.imposto_seletivo
-    item.motivos = list(
-        dict.fromkeys([m for m in item.motivos or [] if m not in _MOTIVOS_DO_ENQUADRAMENTO] + list(r.motivos))
-    )
-
-
-_MOTIVOS_DO_ENQUADRAMENTO = {
-    "CONDICAO_LEGAL_NAO_VERIFICAVEL",
-    "EXCECAO_LEGAL_POSSIVEL",
-    "REGRA_PENDENTE_DE_REVISAO",
-    "MULTIPLAS_REGRAS_APLICAVEIS",
-    "SUJEITO_A_IMPOSTO_SELETIVO",
-    "CASO_CONTROVERSO",
-    "BASE_REFERENCIA_INCOMPLETA",
-}
 
 
 def editar(
@@ -254,12 +231,17 @@ def editar(
     cclasstrib: str | None = None,
     comentario: str | None = None,
     aprovar_em_seguida: bool = False,
-) -> AuditItem:
+) -> tuple[AuditItem, bool]:
+    """Devolve (item, precisa_reprocessar). Trocar o código exige nova investigação da família."""
     item, audit = _carregar(session, item_id)
-    if item.revisao_status == StatusRevisao.APROVADO:
+    if item.revisao_status == StatusRevisao.APROVADO and not item.aprovado_automaticamente:
         raise Conflito("Item já aprovado. Desfaça a aprovação antes de editar.")
     antes = foto(item)
-    _, snap = _conjunto(session, audit)
+    snap = session.get(RefSnapshot, audit.snapshot_id) if audit.snapshot_id else None
+    if snap is None:
+        raise Conflito("A auditoria não tem snapshot da base de referência.")
+    reprocessar = False
+    acao = AcaoRevisao.RESPONDER
     if codigo is not None:
         tipo = tipo_codigo or item.tipo_codigo_sugerido or "ncm"
         versao = snap.versoes.get(tipo)
@@ -268,14 +250,31 @@ def editar(
             raise Conflito(f"O código {codigo} não existe na tabela {tipo.upper()} usada nesta auditoria.")
         if not no["folha"]:
             raise Conflito("Escolha um código completo (último nível da hierarquia).")
-        item.tipo_codigo_sugerido, item.codigo_sugerido = tipo, codigo
+        review = _registrar(session, item, AcaoRevisao.EDITAR, antes, revisor, comentario)
+        # A identidade definida pelo revisor vira memória da empresa; o item é reanalisado com ela.
+        _memoria(session, item, audit, review, revisor, tipo_codigo=tipo, codigo=codigo, cst=None, cclasstrib=None)
+        item.revisao_status = StatusRevisao.PENDENTE
+        item.aprovado_automaticamente = False
+        item.tentativa += 1
+        item.status, item.etapa, item.perguntas = StatusItem.PENDENTE, None, []
+        return item, True
     if respostas:
-        atributos = dict(item.atributos or {})
         for k, v in respostas.items():
-            atributos[k] = str(v).strip().lower()
-        item.atributos = atributos
-    if codigo is not None or respostas:
-        recalcular_enquadramento(session, item, audit)
+            fatos_mod.registrar(
+                session,
+                org_id=item.org_id,
+                company_id=item.company_id,
+                escopo=EscopoFato.ITEM,
+                item_chave=item.codigo_interno,
+                atributo=k,
+                valor_=v,
+                origem=OrigemFato.USUARIO,
+                evidencia=f"Informado na revisão do item{': ' + comentario if comentario else ''}",
+                autor_id=revisor.user_id,
+                autor_email=revisor.email,
+                audit_id=audit.id,
+            )
+        aplicacao.reavaliar(session, item.id, f"fato informado por {revisor.email}")
     if cst or cclasstrib:
         if not (cst and cclasstrib and comentario):
             raise Conflito("Para definir CST e cClassTrib manualmente, informe os dois e uma justificativa.")
@@ -292,22 +291,28 @@ def editar(
         if c is None or c.cst != cst:
             raise Conflito("CST/cClassTrib inexistente na tabela oficial ou incompatíveis entre si.")
         item.cst_sugerido, item.cclasstrib_sugerido, item.regra_id = cst, cclasstrib, None
+        item.perc_red_ibs, item.perc_red_cbs = c.perc_red_ibs, c.perc_red_cbs
+        item.hipotese = "manual"
+        item.conclusao = f"Enquadramento definido pelo revisor ({revisor.email}): {comentario}"
         item.dispositivo_legal = f"Definido manualmente pelo revisor ({revisor.email}): {comentario}"
         item.perguntas = []
-    _registrar(
-        session, item, AcaoRevisao.EDITAR if (codigo or cst) else AcaoRevisao.RESPONDER, antes, revisor, comentario
-    )
+        acao = AcaoRevisao.EDITAR
+        aplicacao.versionar_perfil(
+            session, item, audit, registro={"manual": True, "revisor": revisor.email}, motivo="definido pelo revisor"
+        )
+    _registrar(session, item, acao, antes, revisor, comentario)
     if aprovar_em_seguida:
         _aprovar_um(session, item, audit, revisor, comentario)
-    return item
+    return item, reprocessar
 
 
 def rejeitar(session: Session, item_id: uuid.UUID, revisor: Revisor, comentario: str) -> ItemReview:
     item, _ = _carregar(session, item_id)
-    if item.revisao_status == StatusRevisao.APROVADO:
+    if item.revisao_status == StatusRevisao.APROVADO and not item.aprovado_automaticamente:
         raise Conflito("Item já aprovado. Desfaça a aprovação antes de rejeitar.")
     antes = foto(item)
     item.revisao_status = StatusRevisao.REJEITADO
+    item.aprovado_automaticamente = False
     item.revisado_por, item.revisado_em = revisor.user_id, datetime.now(UTC)
     return _registrar(session, item, AcaoRevisao.REJEITAR, antes, revisor, comentario)
 
@@ -342,7 +347,7 @@ def desfazer(session: Session, item_id: uuid.UUID, revisor: Revisor) -> ItemRevi
 @dataclass
 class FiltroLote:
     status: list[str] | None = None
-    confianca_min: float | None = None
+    confianca: list[str] | None = None  # confiança global aceita (alta, media)
     motivos_excluir: list[str] | None = None
     item_ids: list[uuid.UUID] | None = None
     somente_sem_perguntas: bool = True
@@ -355,12 +360,12 @@ def itens_do_lote(session: Session, audit_id: uuid.UUID, f: FiltroLote) -> list[
         AuditItem.revisao_status == StatusRevisao.PENDENTE,
         AuditItem.codigo_sugerido.is_not(None),
         AuditItem.cclasstrib_sugerido.is_not(None),
-        AuditItem.status.in_([StatusItem.CONFIRMADO, StatusItem.CORRIGIDO, StatusItem.ANALISE_HUMANA]),
+        AuditItem.status.in_(list(STATUS_REVISAVEIS)),
     )
     if f.status:
         q = q.where(AuditItem.status.in_(f.status))
-    if f.confianca_min is not None:
-        q = q.where(AuditItem.confianca >= Decimal(str(f.confianca_min)))
+    if f.confianca:
+        q = q.where(AuditItem.confianca_global.in_(f.confianca))
     if f.item_ids:
         q = q.where(AuditItem.id.in_(f.item_ids))
     itens = list(session.scalars(q.order_by(AuditItem.linha)))

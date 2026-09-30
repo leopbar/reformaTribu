@@ -189,3 +189,242 @@ class ExpansaoAbreviacoes(BaseModel):
     descricao_expandida: str
     expansoes: list[dict[str, str]]
     ambiguas: list[str]
+
+
+# ------------------------------------------------------------ analista fiscal (investigação) --
+_FUNDAMENTO = {
+    "type": "object",
+    "properties": {"ref": {"type": "string"}, "trecho": {"type": "string"}},
+    "required": ["ref", "trecho"],
+    "additionalProperties": False,
+}
+_CONDICAO = {
+    "type": "object",
+    "properties": {
+        "fato": {"type": "string"},
+        "valor_exigido": {"type": "string"},
+        "explicacao": {"type": "string"},
+    },
+    "required": ["fato", "valor_exigido", "explicacao"],
+    "additionalProperties": False,
+}
+_EXCECAO = {
+    "type": "object",
+    "properties": {
+        "descricao": {"type": "string"},
+        "fato": {"type": "string"},
+        "valor_que_exclui": {"type": "string"},
+    },
+    "required": ["descricao", "fato", "valor_que_exclui"],
+    "additionalProperties": False,
+}
+_HIPOTESE = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "titulo": {"type": "string"},
+        "tipo": {"type": "string", "enum": ["beneficio", "regime_especifico", "regra_geral", "nao_incidencia"]},
+        "cclasstrib": {"type": "string"},
+        "condicoes": {"type": "array", "items": _CONDICAO},
+        "excecoes": {"type": "array", "items": _EXCECAO},
+        "fundamentos": {"type": "array", "items": _FUNDAMENTO},
+        "explicacao": {"type": "string"},
+    },
+    "required": ["id", "titulo", "tipo", "cclasstrib", "condicoes", "excecoes", "fundamentos", "explicacao"],
+    "additionalProperties": False,
+}
+_FATO_NECESSARIO = {
+    "type": "object",
+    "properties": {
+        "fato": {"type": "string"},
+        "escopo": {"type": "string", "enum": ["empresa", "item"]},
+        "pergunta": {"type": "string"},
+        "opcoes": {"type": "array", "items": {"type": "string"}},
+        "como_identificar_na_descricao": {"type": "string"},
+    },
+    "required": ["fato", "escopo", "pergunta", "opcoes", "como_identificar_na_descricao"],
+    "additionalProperties": False,
+}
+SCHEMA_INVESTIGACAO: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "entendimento": {"type": "string"},
+        "hipoteses": {"type": "array", "items": _HIPOTESE},
+        "fatos_necessarios": {"type": "array", "items": _FATO_NECESSARIO},
+        "imposto_seletivo": {
+            "type": "object",
+            "properties": {
+                "situacao": {"type": "string", "enum": ["nao_sujeito", "sujeito", "depende"]},
+                "condicoes": {"type": "array", "items": _CONDICAO},
+                "fundamentos": {"type": "array", "items": _FUNDAMENTO},
+                "explicacao": {"type": "string"},
+            },
+            "required": ["situacao", "condicoes", "fundamentos", "explicacao"],
+            "additionalProperties": False,
+        },
+        "conflitos": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "descricao": {"type": "string"},
+                    "refs": {"type": "array", "items": {"type": "string"}},
+                    "muda_resultado": {"type": "boolean"},
+                    "cclasstrib_em_jogo": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["descricao", "refs", "muda_resultado", "cclasstrib_em_jogo"],
+                "additionalProperties": False,
+            },
+        },
+        "observacoes": {"type": "string"},
+    },
+    "required": ["entendimento", "hipoteses", "fatos_necessarios", "imposto_seletivo", "conflitos", "observacoes"],
+    "additionalProperties": False,
+}
+
+
+class Fundamento(BaseModel):
+    ref: str
+    trecho: str = ""
+
+
+class CondicaoHipotese(BaseModel):
+    fato: str
+    valor_exigido: str
+    explicacao: str = ""
+
+
+class ExcecaoHipotese(BaseModel):
+    descricao: str
+    fato: str = ""
+    valor_que_exclui: str = ""
+
+
+class Hipotese(BaseModel):
+    id: str
+    titulo: str
+    tipo: Literal["beneficio", "regime_especifico", "regra_geral", "nao_incidencia"]
+    cclasstrib: str
+    condicoes: list[CondicaoHipotese] = Field(default_factory=list)
+    excecoes: list[ExcecaoHipotese] = Field(default_factory=list)
+    fundamentos: list[Fundamento] = Field(default_factory=list)
+    explicacao: str = ""
+
+    @field_validator("cclasstrib")
+    @classmethod
+    def _digitos(cls, v: str) -> str:
+        return "".join(c for c in v if c.isdigit())
+
+
+class FatoNecessario(BaseModel):
+    fato: str
+    escopo: Literal["empresa", "item"]
+    pergunta: str
+    opcoes: list[str] = Field(default_factory=list)
+    como_identificar_na_descricao: str = ""
+
+
+class ImpostoSeletivo(BaseModel):
+    situacao: Literal["nao_sujeito", "sujeito", "depende"]
+    condicoes: list[CondicaoHipotese] = Field(default_factory=list)
+    fundamentos: list[Fundamento] = Field(default_factory=list)
+    explicacao: str = ""
+
+
+class Conflito(BaseModel):
+    descricao: str
+    refs: list[str] = Field(default_factory=list)
+    # Só um conflito que muda o cClassTrib aplicado trava o item (versões antigas não têm os campos).
+    muda_resultado: bool = True
+    cclasstrib_em_jogo: list[str] = Field(default_factory=list)
+
+
+class Investigacao(BaseModel):
+    entendimento: str
+    hipoteses: list[Hipotese]
+    fatos_necessarios: list[FatoNecessario] = Field(default_factory=list)
+    imposto_seletivo: ImpostoSeletivo
+    conflitos: list[Conflito] = Field(default_factory=list)
+    observacoes: str = ""
+
+
+# ------------------------------------------------------------ analista fiscal (fatos do item) --
+SCHEMA_FATOS_ITEM: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "fatos": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "fato": {"type": "string"},
+                    "valor": {"type": "string"},
+                    "base": {"type": "string", "enum": ["explicito", "inferencia", "sem_informacao"]},
+                    "evidencia": {"type": "string"},
+                },
+                "required": ["fato", "valor", "base", "evidencia"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["fatos"],
+    "additionalProperties": False,
+}
+
+
+class FatoExtraido(BaseModel):
+    fato: str
+    valor: str
+    base: Literal["explicito", "inferencia", "sem_informacao"]
+    evidencia: str = ""
+
+
+class FatosItem(BaseModel):
+    fatos: list[FatoExtraido]
+
+
+# ------------------------------------------------------------ busca guiada pela árvore oficial --
+SCHEMA_NAVEGACAO: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "escolha": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "alternativas": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"codigo": {"type": "string"}, "motivo": {"type": "string"}},
+                "required": ["codigo", "motivo"],
+                "additionalProperties": False,
+            },
+        },
+        "confianca": {"type": "number"},
+        "justificativa": {"type": "string"},
+    },
+    "required": ["escolha", "alternativas", "confianca", "justificativa"],
+    "additionalProperties": False,
+}
+
+
+class AlternativaArvore(BaseModel):
+    codigo: str
+    motivo: str = ""
+
+
+class NavegacaoArvore(BaseModel):
+    escolha: str | None
+    alternativas: list[AlternativaArvore] = Field(default_factory=list)
+    confianca: float
+    justificativa: str = ""
+
+    @field_validator("confianca")
+    @classmethod
+    def _limitar(cls, v: float) -> float:
+        return max(0.0, min(1.0, float(v)))
+
+    @field_validator("escolha")
+    @classmethod
+    def _digitos(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        d = "".join(c for c in v if c.isdigit())
+        return d or None

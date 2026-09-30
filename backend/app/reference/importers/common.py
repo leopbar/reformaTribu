@@ -105,10 +105,12 @@ def ativar_versao(
     avisos: list[Any],
     vigencia_inicio: date | None = None,
 ) -> None:
+    filtro = [RefVersion.fonte == versao.fonte, RefVersion.status == StatusVersao.ATIVA, RefVersion.id != versao.id]
+    if versao.fonte == "normas":
+        # Vários atos normativos ficam ativos ao mesmo tempo: só a versão anterior do mesmo ato é substituída.
+        filtro.append(RefVersion.rotulo == versao.rotulo)
     session.execute(
-        update(RefVersion)
-        .where(RefVersion.fonte == versao.fonte, RefVersion.status == StatusVersao.ATIVA, RefVersion.id != versao.id)
-        .values(status=StatusVersao.SUBSTITUIDA, vigencia_fim=date.today())
+        update(RefVersion).where(*filtro).values(status=StatusVersao.SUBSTITUIDA, vigencia_fim=date.today())
     )
     versao.status = StatusVersao.ATIVA
     versao.estatisticas = estatisticas

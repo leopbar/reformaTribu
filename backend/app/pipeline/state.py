@@ -34,6 +34,9 @@ class ItemState(BaseModel):
     # recuperar_candidatos
     candidatos: list[dict[str, Any]] = Field(default_factory=list)
     busca: dict[str, Any] = Field(default_factory=dict)
+    # Código informado confirmado pela busca na tabela oficial, sem IA.
+    confirmado_sem_ia: bool = False
+    posicao_confirmacao: int | None = None
 
     # julgar_coerencia / escalar
     julgamento: dict[str, Any] | None = None
@@ -45,14 +48,19 @@ class ItemState(BaseModel):
     llm_calls: list[str] = Field(default_factory=list)
     falha_ia: str | None = None
 
-    # enquadrar
+    # navegar_arvore (busca guiada pela árvore oficial, para itens sem código)
+    arvore: dict[str, Any] | None = None
+
+    # identidade consolidada (código escolhido)
     tipo_codigo_final: str | None = None
     codigo_final: str | None = None
     atributos: dict[str, str] = Field(default_factory=dict)
-    enquadramento: dict[str, Any] = Field(default_factory=dict)
 
-    # decidir_status
+    # investigar (tese da família) e levantar_fatos (fatos explícitos do item)
+    tese_id: str | None = None
+    tese_falha: str | None = None
+    fatos_levantados: bool = False
+
+    # concluir
     status: str | None = None
-    confianca: float | None = None
-    confianca_componentes: dict[str, Any] = Field(default_factory=dict)
     concluido: bool = False

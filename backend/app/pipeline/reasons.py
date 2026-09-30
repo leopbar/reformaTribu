@@ -32,6 +32,10 @@ class Motivo(StrEnum):
     FALHA_NA_ANALISE_IA = "FALHA_NA_ANALISE_IA"
     ORCAMENTO_ESGOTADO = "ORCAMENTO_ESGOTADO"
     ITEM_DUPLICADO = "ITEM_DUPLICADO"
+    FATO_PENDENTE = "FATO_PENDENTE"
+    CONFLITO_NORMATIVO = "CONFLITO_NORMATIVO"
+    SEM_HIPOTESE_SUSTENTADA = "SEM_HIPOTESE_SUSTENTADA"
+    TESE_NAO_CONCLUIDA = "TESE_NAO_CONCLUIDA"
 
 
 TEXTOS: dict[str, tuple[str, str]] = {
@@ -89,6 +93,19 @@ TEXTOS: dict[str, tuple[str, str]] = {
     "FALHA_NA_ANALISE_IA": ("Falha na análise por IA", "A análise por IA não pôde ser concluída."),
     "ORCAMENTO_ESGOTADO": ("Orçamento de IA esgotado", "O orçamento mensal de IA foi atingido."),
     "ITEM_DUPLICADO": ("Item duplicado", "Há outra linha com o mesmo código interno ou descrição."),
+    "FATO_PENDENTE": (
+        "Falta uma informação",
+        "Um fato que muda o enquadramento ainda não foi confirmado; há uma pergunta aberta.",
+    ),
+    "CONFLITO_NORMATIVO": (
+        "Conflito entre fontes",
+        "A lei, a tabela oficial ou uma regra aprovada apontam em direções diferentes.",
+    ),
+    "SEM_HIPOTESE_SUSTENTADA": (
+        "Nenhuma hipótese se sustenta",
+        "Com os fatos conhecidos, nenhuma hipótese de enquadramento ficou de pé.",
+    ),
+    "TESE_NAO_CONCLUIDA": ("Investigação não concluída", "A investigação jurídica da família não pôde ser feita."),
 }
 
 # Motivos que, sozinhos, impedem Confirmado/Corrigido (vão para análise humana).

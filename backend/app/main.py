@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import text
 
-from app.api import audits, auth, dashboard, exports, orgs, reference, review
+from app.api import analise, audits, auth, dashboard, exports, fluxo, ia, orgs, reference, review
 from app.config import get_settings
 from app.core.errors import instalar_tratadores
 from app.core.logging import configurar_logs
@@ -44,7 +44,18 @@ app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestContextMiddleware)
 
 api = APIRouter(prefix="/api")
-for r in (auth.router, orgs.router, dashboard.router, audits.router, review.router, exports.router, reference.router):
+for r in (
+    auth.router,
+    orgs.router,
+    dashboard.router,
+    audits.router,
+    review.router,
+    analise.router,
+    fluxo.router,
+    ia.router,
+    exports.router,
+    reference.router,
+):
     api.include_router(r)
 
 

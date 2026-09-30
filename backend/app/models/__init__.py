@@ -1,3 +1,4 @@
+from app.models.analise import CompanyFact, Pendencia, TaxProfile, TaxThesis
 from app.models.audit import (
     Abbreviation,
     ApprovedMemory,
@@ -13,6 +14,7 @@ from app.models.audit import (
     UploadedFile,
 )
 from app.models.audit_log import AuditLog
+from app.models.ia import LlmAgent, LlmModel, LlmProvider
 from app.models.reference import (
     CClassTribCode,
     CClassTribCorrelacao,
@@ -46,6 +48,7 @@ __all__ = [
     "CClassTribCorrelacao",
     "Company",
     "CompanyAccess",
+    "CompanyFact",
     "ConditionAttribute",
     "CstCode",
     "ExportJob",
@@ -54,8 +57,11 @@ __all__ = [
     "ItemReview",
     "LegalProvision",
     "LegalRule",
+    "LlmAgent",
     "LlmBatch",
     "LlmCall",
+    "LlmModel",
+    "LlmProvider",
     "MappingTemplate",
     "Membership",
     "NbsNode",
@@ -63,10 +69,13 @@ __all__ = [
     "Notification",
     "OrgSettings",
     "Organization",
+    "Pendencia",
     "RefSnapshot",
     "RefVersion",
     "RefreshToken",
     "RuleCode",
+    "TaxProfile",
+    "TaxThesis",
     "UploadedFile",
     "User",
 ]

@@ -1,4 +1,4 @@
-"""Geração dos embeddings das descrições oficiais (somente códigos folha)."""
+"""Geração dos embeddings das descrições oficiais (códigos folha) e dos trechos normativos."""
 
 from __future__ import annotations
 
@@ -15,6 +15,16 @@ from app.embeddings import client
 from app.models import RefVersion
 
 log = structlog.get_logger()
+
+FONTES_NOMENCLATURA = ("ncm", "nbs")
+FONTES_NORMATIVAS = ("lc214", "normas")
+
+# Texto indexado de cada trecho normativo: ato, localização e conteúdo (limitado ao que o modelo lê).
+_SQL_TEXTO_NORMA = """
+SELECT id, norma || ' ' || coalesce('Anexo ' || anexo || ' item ' || item, 'Art. ' || artigo, '') || ': '
+       || coalesce(titulo_anexo || ' — ', '') || left(texto, 1800) AS conteudo
+  FROM legal_provisions WHERE version_id = :v AND embedding IS NULL ORDER BY ordem, id LIMIT :l
+"""
 
 
 def indexar_versao(version_id: uuid.UUID, lote: int = 256) -> int:
@@ -40,27 +50,30 @@ def _indexar(version_id: uuid.UUID, lote: int, renovar: Callable[[], object] = l
     ctx = TenantContext(org_id=None, platform_admin=True)
     with sync_reference_admin_session(ctx) as sess:
         v = sess.get(RefVersion, version_id)
-        if v is None or v.fonte not in ("ncm", "nbs"):
+        if v is None or v.fonte not in (*FONTES_NOMENCLATURA, *FONTES_NORMATIVAS):
             return 0
-        tabela = "nbs_nodes" if v.fonte == "nbs" else "ncm_nodes"
+        fonte = v.fonte
         v.embeddings_status = "processando"
         v.embeddings_modelo = s.embeddings_modelo
+    if fonte in FONTES_NORMATIVAS:
+        tabela = "legal_provisions"
+        consulta = _SQL_TEXTO_NORMA
+    else:
+        tabela = "nbs_nodes" if fonte == "nbs" else "ncm_nodes"
+        consulta = (
+            f"SELECT id, descricao_completa AS conteudo FROM {tabela} WHERE version_id = :v AND folha "
+            "AND embedding IS NULL ORDER BY id LIMIT :l"
+        )
     total = 0
     atualizar = text(f"UPDATE {tabela} SET embedding = :e WHERE id = :i").bindparams(
         bindparam("e", type_=Vector(s.embeddings_dim))
     )
     while True:
         with sync_reference_admin_session(ctx) as sess:
-            rows = sess.execute(
-                text(
-                    f"SELECT id, descricao_completa FROM {tabela} WHERE version_id = :v AND folha "
-                    "AND embedding IS NULL ORDER BY id LIMIT :l"
-                ),
-                {"v": version_id, "l": lote},
-            ).all()
+            rows = sess.execute(text(consulta), {"v": version_id, "l": lote}).all()
             if not rows:
                 break
-            vetores = client.embed([r.descricao_completa for r in rows], tipo="documento")
+            vetores = client.embed([r.conteudo for r in rows], tipo="documento")
             sess.execute(atualizar, [{"e": vec, "i": r.id} for r, vec in zip(rows, vetores, strict=True)])
             total += len(rows)
             log.info("embeddings_lote", versao=str(version_id), total=total)

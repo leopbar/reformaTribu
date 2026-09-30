@@ -17,6 +17,7 @@ from app.reference.importers.cclasstrib import importar_cclasstrib
 from app.reference.importers.common import Coleta, FonteIndisponivel, FormatoInvalido, baixar
 from app.reference.importers.lc214 import importar_lc214
 from app.reference.importers.nomenclatura import importar_nbs, importar_ncm
+from app.reference.importers.normas import CATALOGO, ato_por_chave, importar_norma
 from app.rules.official import aplicar_regras_geradas, gerar_regras
 from app.rules.validation import revalidar_todas
 from app.storage import files
@@ -71,6 +72,41 @@ def garantir_catalogo_base() -> None:
         for chave, fonte, pergunta, desc in ATRIBUTOS_BASE:
             if chave not in existentes:
                 s.add(ConditionAttribute(chave=chave, fonte=fonte, pergunta=pergunta, descricao=desc, valores=[]))
+
+
+def importar_ato(
+    chave: str,
+    *,
+    arquivo_rel: str | None = None,
+    nome_arquivo: str | None = None,
+    usuario_id: uuid.UUID | None = None,
+    usuario_email: str | None = None,
+) -> dict[str, Any]:
+    """Importa um ato normativo do catálogo (EC 132/2023, LC 227/2026, Decreto 12.955/2026...)."""
+    ato = ato_por_chave(chave)
+    coleta = Coleta(files.ler(arquivo_rel), None, "upload_manual", nome_arquivo) if arquivo_rel else baixar(ato.url)
+    ctx = TenantContext(org_id=None, user_id=usuario_id, platform_admin=True)
+    try:
+        with sync_reference_admin_session(ctx) as sess:
+            versao, criada = importar_norma(sess, coleta, ato, usuario_id, usuario_email)
+            registrar_sync(
+                sess,
+                Acao.REFERENCIA_IMPORTADA,
+                org_id=None,
+                user_id=usuario_id,
+                user_email=usuario_email,
+                entidade="ref_version",
+                entidade_id=versao.id,
+                detalhes={"fonte": "normas", "ato": ato.rotulo, "criada": criada, "url": coleta.url},
+            )
+            return {
+                "versao_id": str(versao.id),
+                "criada": criada,
+                "fonte": "normas",
+                "estatisticas": versao.estatisticas,
+            }
+    except (FormatoInvalido, FonteIndisponivel) as e:
+        raise ValueError(f"{e} Como alternativa, salve a página {ato.url} (Ctrl+S, somente HTML) e envie.") from e
 
 
 def importar(
@@ -149,7 +185,31 @@ def pos_importacao(fonte: str) -> dict[str, Any]:
 def status_base() -> dict[str, Any]:
     with sync_reference_admin_session(TenantContext(org_id=None, platform_admin=True)) as sess:
         saida: dict[str, Any] = {}
+        atos = {
+            v.rotulo: v
+            for v in sess.scalars(
+                select(RefVersion).where(RefVersion.fonte == "normas", RefVersion.status == StatusVersao.ATIVA)
+            )
+        }
+        saida["atos_normativos"] = [
+            {
+                "chave": a.chave,
+                "rotulo": a.rotulo,
+                "ementa": a.ementa,
+                "url": a.url,
+                "versao": None
+                if a.rotulo not in atos
+                else {
+                    "id": str(atos[a.rotulo].id),
+                    "coletado_em": atos[a.rotulo].coletado_em.isoformat(),
+                    "embeddings": atos[a.rotulo].embeddings_status,
+                },
+            }
+            for a in CATALOGO
+        ]
         for f in FonteReferencia:
+            if f == FonteReferencia.NORMAS:
+                continue
             v = sess.scalar(
                 select(RefVersion)
                 .where(RefVersion.fonte == f.value, RefVersion.status == StatusVersao.ATIVA)

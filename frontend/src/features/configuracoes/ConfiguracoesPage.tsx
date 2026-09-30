@@ -42,7 +42,7 @@ function FormGeral({ inicial, gastoMes }: { inicial: Schemas["ConfiguracoesOut"]
   const salvar = useMutation({
     mutationFn: () => {
       const corpo: Partial<Schemas["ConfiguracoesOut"]> = { ...c };
-      delete corpo.modelos_disponiveis;
+      delete corpo.modelos_agentes;
       return ok(api.PATCH("/api/organizacao/configuracoes", { body: corpo }));
     },
     onSuccess: () => {
@@ -51,31 +51,44 @@ function FormGeral({ inicial, gastoMes }: { inicial: Schemas["ConfiguracoesOut"]
     },
     onError: (e) => toast.error(mensagemErro(e)),
   });
-  const modelos = c.modelos_disponiveis.map((m) => ({ valor: m, rotulo: m }));
   const num = (k: keyof Schemas["ConfiguracoesOut"]) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setC({ ...c, [k]: e.target.value === "" ? null : Number(e.target.value) });
   return (
     <div className="grid max-w-3xl gap-6">
-      <Painel className="grid gap-4 p-5 sm:grid-cols-3">
-        <h2 className="text-base sm:col-span-3">Limites de confiança</h2>
-        <p className="-mt-2 text-xs text-tinta-3 sm:col-span-3">Limites mais altos mandam mais itens para análise humana e reduzem o risco de “falsos confirmados”.</p>
-        <Campo rotulo="Confirmado a partir de" htmlFor="lc"><Input id="lc" type="number" step="0.01" min="0.5" max="1" value={c.limiar_confirmado} onChange={num("limiar_confirmado")} /></Campo>
-        <Campo rotulo="Corrigido a partir de" htmlFor="lk"><Input id="lk" type="number" step="0.01" min="0.5" max="1" value={c.limiar_corrigido} onChange={num("limiar_corrigido")} /></Campo>
-        <Campo rotulo="Escalonar abaixo de" htmlFor="le"><Input id="le" type="number" step="0.01" min="0" max="1" value={c.limiar_escalonamento} onChange={num("limiar_escalonamento")} /></Campo>
+      <Painel className="grid gap-4 p-5 sm:grid-cols-2">
+        <h2 className="text-base sm:col-span-2">Aprovação e revisão</h2>
+        <p className="-mt-2 text-xs text-tinta-3 sm:col-span-2">
+          A confiança do analista não é um número: cada item passa por 10 dimensões (identificação, código, contexto, regra, condições,
+          exceções, cClassTrib, fonte, conflito e Imposto Seletivo). Só é “Classificado” quem tem todas confirmadas.
+        </p>
+        <label className="flex items-start gap-3 text-sm sm:col-span-2">
+          <Switch checked={c.aprovacao_automatica} onCheckedChange={(v) => setC({ ...c, aprovacao_automatica: v })} />
+          <span>
+            Aprovar automaticamente os itens classificados com confiança alta
+            <span className="block text-2xs text-tinta-3">A aprovação fica registrada como automática no dossiê de decisão. Desligado, todo item passa por um revisor.</span>
+          </span>
+        </label>
+        <label className="flex items-center gap-3 text-sm sm:col-span-2"><Switch checked={c.imposto_seletivo_exige_analise} onCheckedChange={(v) => setC({ ...c, imposto_seletivo_exige_analise: v })} /> Itens sujeitos ao Imposto Seletivo sempre passam pelo contador</label>
+        <Campo rotulo="Pedir segundo parecer na identificação abaixo de" htmlFor="le" ajuda="Confiança do primeiro parecer (0 a 1)."><Input id="le" type="number" step="0.01" min="0" max="1" value={c.limiar_escalonamento} onChange={num("limiar_escalonamento")} /></Campo>
       </Painel>
       <Painel className="grid gap-4 p-5 sm:grid-cols-2">
         <h2 className="text-base sm:col-span-2">Modelos de IA</h2>
-        <Campo rotulo="Julgamento principal"><Select aria-label="Modelo principal" valor={c.modelo_principal ?? "_"} aoMudar={(v) => setC({ ...c, modelo_principal: v === "_" ? null : v })} opcoes={[{ valor: "_", rotulo: "Padrão do servidor" }, ...modelos]} /></Campo>
-        <Campo rotulo="Segundo parecer (escalonamento)"><Select aria-label="Modelo de escalonamento" valor={c.modelo_escalonamento ?? "_"} aoMudar={(v) => setC({ ...c, modelo_escalonamento: v === "_" ? null : v })} opcoes={[{ valor: "_", rotulo: "Padrão do servidor" }, ...modelos]} /></Campo>
-        <Campo rotulo="Modelo leve (abreviações difíceis)"><Select aria-label="Modelo leve" valor={c.modelo_leve ?? "_"} aoMudar={(v) => setC({ ...c, modelo_leve: v === "_" ? null : v })} opcoes={[{ valor: "_", rotulo: "Padrão do servidor" }, ...modelos]} /></Campo>
-        <label className="flex items-center gap-3 self-end text-sm"><Switch checked={c.usar_modelo_leve} onCheckedChange={(v) => setC({ ...c, usar_modelo_leve: v })} /> Usar modelo leve para expandir abreviações</label>
-        <Campo rotulo="Usar lote (Batch API) a partir de N itens" htmlFor="lote" ajuda="Lotes custam 50% menos e levam até 24 h."><Input id="lote" type="number" min={1} value={c.lote_min_itens ?? ""} placeholder="padrão do servidor" onChange={num("lote_min_itens")} /></Campo>
+        <p className="-mt-2 text-xs text-tinta-3 sm:col-span-2">O modelo de cada agente é escolhido pelo administrador da plataforma (tela “Modelos de IA”) e vale para todas as organizações. Modelos em uso agora:</p>
+        <dl className="grid gap-1 text-sm sm:col-span-2 sm:grid-cols-2">
+          {Object.entries(c.modelos_agentes).map(([agente, modelo]) => (
+            <div key={agente} className="flex justify-between gap-3 rounded-md border border-regua px-3 py-1.5">
+              <dt className="text-tinta-3">{agente}</dt>
+              <dd className="font-medium">{modelo}</dd>
+            </div>
+          ))}
+        </dl>
+        <label className="flex items-center gap-3 self-end text-sm"><Switch checked={c.usar_modelo_leve} onCheckedChange={(v) => setC({ ...c, usar_modelo_leve: v })} /> Usar IA para decifrar abreviações desconhecidas</label>
+        <Campo rotulo="Usar lote (Batch API) a partir de N itens" htmlFor="lote" ajuda="Lotes custam 50% menos e levam até 24 h (só modelos Claude; os demais saem em tempo real)."><Input id="lote" type="number" min={1} value={c.lote_min_itens ?? ""} placeholder="padrão do servidor" onChange={num("lote_min_itens")} /></Campo>
       </Painel>
       <Painel className="grid gap-4 p-5 sm:grid-cols-2">
-        <h2 className="text-base sm:col-span-2">Orçamento e regras de análise</h2>
+        <h2 className="text-base sm:col-span-2">Orçamento e retenção</h2>
         <Campo rotulo="Orçamento mensal de IA (US$)" htmlFor="orc" ajuda={`Gasto neste mês: ${fmtUSD(gastoMes)}`}><Input id="orc" type="number" min={0} step="1" value={c.orcamento_mensal_usd ?? ""} onChange={num("orcamento_mensal_usd")} /></Campo>
         <Campo rotulo="Alertar ao atingir (%)" htmlFor="al"><Input id="al" type="number" min={10} max={100} value={c.alerta_orcamento_pct} onChange={num("alerta_orcamento_pct")} /></Campo>
-        <label className="flex items-center gap-3 text-sm sm:col-span-2"><Switch checked={c.imposto_seletivo_exige_analise} onCheckedChange={(v) => setC({ ...c, imposto_seletivo_exige_analise: v })} /> Itens sujeitos ao Imposto Seletivo sempre vão para análise humana</label>
         <Campo rotulo="Apagar planilhas originais após (dias)" htmlFor="ret" ajuda="0 = manter. Os itens auditados continuam disponíveis."><Input id="ret" type="number" min={0} value={c.retencao_arquivos_dias} onChange={num("retencao_arquivos_dias")} /></Campo>
       </Painel>
       <div className="flex justify-end">

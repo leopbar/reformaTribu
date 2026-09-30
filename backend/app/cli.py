@@ -53,6 +53,21 @@ def ajustar_dimensao_embeddings(dsn: str, dim: int, modelo: str) -> None:
     import psycopg
 
     with psycopg.connect(dsn, autocommit=True) as conn:
+        # Trechos normativos (base normativa temporal): coluna criada sem dimensão pela migração 0002.
+        prov = conn.execute(
+            "SELECT atttypmod FROM pg_attribute WHERE attrelid = 'legal_provisions'::regclass AND attname = 'embedding'"
+        ).fetchone()
+        if prov and prov[0] != dim:
+            conn.execute("DROP INDEX IF EXISTS ix_legal_provisions_embedding")
+            conn.execute(f"ALTER TABLE legal_provisions ALTER COLUMN embedding TYPE vector({dim}) USING NULL")
+            conn.execute(
+                "CREATE INDEX ix_legal_provisions_embedding ON legal_provisions "
+                "USING hnsw (embedding vector_cosine_ops)"
+            )
+            conn.execute(
+                "UPDATE ref_versions SET embeddings_status = 'pendente', embeddings_modelo = NULL "
+                "WHERE fonte IN ('lc214', 'normas') AND status = 'ativa'"
+            )
         atual = conn.execute(
             "SELECT atttypmod FROM pg_attribute WHERE attrelid = 'ncm_nodes'::regclass AND attname = 'embedding'"
         ).fetchone()
@@ -71,7 +86,12 @@ def ajustar_dimensao_embeddings(dsn: str, dim: int, modelo: str) -> None:
             conn.execute(f"CREATE INDEX ix_{t}_embedding ON {t} USING hnsw (embedding vector_cosine_ops) WHERE folha")
         conn.execute(
             "UPDATE ref_versions SET embeddings_status = 'pendente', embeddings_modelo = NULL "
-            "WHERE fonte IN ('ncm', 'nbs') AND status = 'ativa'"
+            "WHERE fonte IN ('ncm', 'nbs', 'lc214', 'normas') AND status = 'ativa'"
+        )
+        conn.execute("DROP INDEX IF EXISTS ix_legal_provisions_embedding")
+        conn.execute(f"ALTER TABLE legal_provisions ALTER COLUMN embedding TYPE vector({dim}) USING NULL")
+        conn.execute(
+            "CREATE INDEX ix_legal_provisions_embedding ON legal_provisions USING hnsw (embedding vector_cosine_ops)"
         )
 
 
@@ -144,6 +164,19 @@ def seed_reference(fontes: list[str]) -> None:
         print(f"[{fonte}] {'nova versão importada' if r['criada'] else 'já estava atualizada'} (arquivo local).")
 
 
+def seed_normas() -> None:
+    """Importa os demais atos da base normativa (EC 132/2023, LC 227/2026, Decreto 12.955/2026)."""
+    from app.reference import service
+    from app.reference.importers.normas import CATALOGO
+
+    for ato in CATALOGO:
+        try:
+            r = service.importar_ato(ato.chave)
+            print(f"[{ato.rotulo}] {'nova versão importada' if r['criada'] else 'já estava atualizada'}.")
+        except Exception as e:
+            print(f"[{ato.rotulo}] indisponível: {str(e)[:200]}")
+
+
 def indexar() -> None:
     from app.reference import embed_index
 
@@ -196,6 +229,7 @@ def seed_demo() -> None:
                 "Atividades de consultoria em gestão",
             ),
         ]
+        segmentos = {"Comércio varejista de mercadorias em geral": "supermercado", "Padaria e confeitaria": "padaria"}
         for razao, cnpj, regime, uf, ativ in empresas:
             if s.scalar(select(Company).where(Company.cnpj == cnpj)) is None:
                 s.add(
@@ -206,6 +240,7 @@ def seed_demo() -> None:
                         regime_tributario=regime,
                         uf=uf,
                         atividade_principal=ativ,
+                        segmento=segmentos.get(ativ),
                     )
                 )
         for email, nome, papel in [
@@ -240,6 +275,7 @@ def main() -> None:
     r = sub.add_parser("seed-reference")
     r.add_argument("--fonte", action="append", choices=["cclasstrib", "lc214", "ncm", "nbs"])
     sub.add_parser("seed-dicionario")
+    sub.add_parser("seed-normas")
     sub.add_parser("indexar-embeddings")
     sub.add_parser("seed-demo")
     sub.add_parser("mermaid")
@@ -254,6 +290,8 @@ def main() -> None:
         seed_reference(a.fonte or ["ncm", "nbs", "cclasstrib", "lc214"])
     elif a.cmd == "seed-dicionario":
         seed_dicionario()
+    elif a.cmd == "seed-normas":
+        seed_normas()
     elif a.cmd == "indexar-embeddings":
         indexar()
     elif a.cmd == "seed-demo":

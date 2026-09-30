@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import uuid
-from datetime import UTC, datetime
-from decimal import Decimal
 from typing import Any
 
+import orjson
 import structlog
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
-from sqlalchemy import delete, func, insert, or_, select
+from sqlalchemy import or_, select
 
 from app.core.codes import formatar_codigo
 from app.db.session import sync_tenant_session
 from app.embeddings import client as embeddings
-from app.events import bus
 from app.ingest.cleaning import hash_descricao
 from app.llm import gateway
 from app.llm.prompts import carregar
@@ -23,20 +22,17 @@ from app.llm.schemas import (
     SCHEMA_ABREVIACOES,
     SCHEMA_ESCALONAMENTO,
     SCHEMA_JULGAMENTO,
-    AtributosExtraidos,
     Escalonamento,
     ExpansaoAbreviacoes,
     Julgamento,
 )
-from app.models import ApprovedMemory, AuditItem, CClassTribCode, ItemCandidate, LlmCall
+from app.models import ApprovedMemory, AuditItem, CClassTribCode, LlmCall
 from app.models.enums import StatusItem
 from app.pipeline.context import Contexto
-from app.pipeline.decision import EntradaDecisao, decidir
-from app.pipeline.normalize import inferir_tipo, normalizar_descricao, tokens_desconhecidos
+from app.pipeline.normalize import inferir_tipo, normalizar_descricao, remover_marca, tokens_desconhecidos
 from app.pipeline.reasons import Motivo
 from app.pipeline.state import ItemState
 from app.reference.search import buscar_candidatos, obter_no
-from app.rules.engine import enquadrar as aplicar_regras
 
 log = structlog.get_logger()
 
@@ -56,6 +52,12 @@ def _add(motivos: list[str], *novos: str) -> list[str]:
     return list(dict.fromkeys([*motivos, *novos]))
 
 
+def chave_conteudo(no: str, modelo: str, prompt: str, conteudo: dict[str, Any]) -> str:
+    """Chave de idempotência pelo CONTEÚDO: itens idênticos reutilizam a mesma resposta (sem novo custo)."""
+    h = hashlib.sha256(orjson.dumps(conteudo, option=orjson.OPT_SORT_KEYS)).hexdigest()[:32]
+    return f"{no}:{modelo}:{prompt}:{h}"
+
+
 # ----------------------------------------------------------------------------- normalizar --
 def normalizar(state: ItemState, runtime: Rt) -> dict[str, Any]:
     ctx = runtime.context
@@ -63,8 +65,8 @@ def normalizar(state: ItemState, runtime: Rt) -> dict[str, Any]:
     with sync_tenant_session(ctx.tenant) as s:
         item = s.get(AuditItem, uuid.UUID(state.item_id))
         assert item is not None
-        descricao, tipo_inf, ncm, nbs = item.descricao, item.tipo, item.ncm, item.nbs
-    normalizada, expansoes = normalizar_descricao(descricao, ctx.abreviacoes)
+        descricao, tipo_inf, ncm, nbs, marca = item.descricao, item.tipo, item.ncm, item.nbs, item.marca
+    normalizada, expansoes = normalizar_descricao(remover_marca(descricao, marca), ctx.abreviacoes)
     desconhecidos = tokens_desconhecidos(normalizada)
     if ctx.usar_modelo_leve and ctx.modo == "tempo_real" and len(desconhecidos) >= 2:
         prompt = carregar("expandir_abreviacoes")
@@ -110,7 +112,8 @@ def validar_estrutura(state: ItemState, runtime: Rt) -> dict[str, Any]:
             base_incompleta = True
         if state.tipo == "desconhecido" and v_ncm is None and v_nbs is None:
             base_incompleta = True
-        if not ctx.regras.aprovadas or v_cct is None:
+        # O analista precisa da tabela cClassTrib e do texto legal; regras aprovadas não são pré-requisito.
+        if v_cct is None or ctx.versao("lc214") is None:
             base_incompleta = True
         if base_incompleta:
             motivos = _add(motivos, Motivo.BASE_REFERENCIA_INCOMPLETA)
@@ -270,13 +273,70 @@ def recuperar_candidatos(state: ItemState, runtime: Rt) -> dict[str, Any]:
                         "codigo_atual": True,
                     }
                 )
+        # O cadastro antigo é evidência da posição: os códigos vigentes da mesma posição (4 dígitos) do NCM
+        # informado entram como candidatos, exista ou não o código (ex.: feijão cadastrado como "preto"
+        # quando é "comum"). A busca por significado nem sempre os traz.
+        cod_atual = atual.get("provavel") or atual.get("codigo") or ""
+        if atual.get("tipo") == "ncm" and len(cod_atual) >= 4:
+            v = ctx.versao("ncm")
+            if v is not None:
+                from sqlalchemy import text as sql
+
+                for r in s.execute(
+                    sql(
+                        "SELECT codigo, descricao_completa FROM ncm_nodes WHERE version_id = :v AND folha "
+                        "AND codigo LIKE :p ORDER BY (codigo LIKE :p6) DESC, codigo LIMIT 12"
+                    ),
+                    {"v": v, "p": cod_atual[:4] + "%", "p6": cod_atual[:6] + "%"},
+                ):
+                    if all(c["codigo"] != r.codigo for c in lista):
+                        lista.append(
+                            {
+                                "tipo_codigo": "ncm",
+                                "codigo": r.codigo,
+                                "descricao_completa": r.descricao_completa,
+                                "rank_semantico": None,
+                                "rank_textual": None,
+                                "score": 0.0,
+                                "posicao": None,
+                                "codigo_atual": False,
+                            }
+                        )
     for c in lista:
         c.setdefault("codigo_atual", c["codigo"] in (atual.get("codigo"), atual.get("provavel")))
     info["semantica"] = embedding is not None
     motivos = list(state.motivos)
     if not lista:
         motivos = _add(motivos, Motivo.NENHUM_CANDIDATO_ADEQUADO)
-    return {"candidatos": lista, "busca": info, "motivos": motivos}
+    saida: dict[str, Any] = {"candidatos": lista, "busca": info, "motivos": motivos}
+    confirmado = _confirmacao_sem_ia(state, atual, lista)
+    if confirmado is not None:
+        saida.update(confirmado)
+    return saida
+
+
+def _confirmacao_sem_ia(state: ItemState, atual: dict[str, Any], lista: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """O NCM/NBS informado existe, está vigente e é o que a busca na tabela oficial aponta como mais
+    provável para a descrição: fica confirmado sem chamar a IA. Qualquer dúvida segue para a IA."""
+    cod = atual.get("codigo")
+    if not cod or not (atual.get("existe") and atual.get("folha") and atual.get("vigente", True)):
+        return None
+    if (state.estrutura or {}).get("descricao_curta"):
+        return None
+    c = next((x for x in lista if x["codigo"] == cod), None)
+    if c is None or not c.get("posicao"):
+        return None
+    pos, sem, txt = c["posicao"], c.get("rank_semantico"), c.get("rank_textual")
+    # Os dois sinais independentes (significado e palavras) precisam apontar o código informado como o
+    # primeiro. Basta um deles divergir (ex.: "sabonete LÍQUIDO" com NCM de sabonete em barra) para ir à IA.
+    if not (pos == 1 and sem == 1 and txt == 1):
+        return None
+    return {
+        "confirmado_sem_ia": True,
+        "tipo_codigo_final": atual["tipo"],
+        "codigo_final": cod,
+        "posicao_confirmacao": pos,
+    }
 
 
 # --------------------------------------------------------------------- julgamento por IA --
@@ -294,16 +354,8 @@ def _conteudo(state: ItemState, ctx: Contexto) -> dict[str, Any]:
     with sync_tenant_session(ctx.tenant) as s:
         item = s.get(AuditItem, uuid.UUID(state.item_id))
         assert item is not None
-        adicionais = {
-            k: v
-            for k, v in {
-                "unidade": item.unidade,
-                "marca": item.marca,
-                "categoria": item.categoria,
-                "gtin": item.gtin,
-            }.items()
-            if v
-        }
+        adicionais = {k: v for k, v in {"unidade": item.unidade, "categoria": item.categoria}.items() if v}
+        marca = item.marca
     atual = (state.estrutura or {}).get("codigo_atual")
     codigo_atual: dict[str, Any] | None = None
     if atual:
@@ -321,7 +373,7 @@ def _conteudo(state: ItemState, ctx: Contexto) -> dict[str, Any]:
             )
     return {
         "item": {
-            "descricao_original": state.descricao,
+            "descricao_original": remover_marca(state.descricao, marca),
             "descricao_normalizada": state.descricao_normalizada,
             "tipo_inferido": state.tipo,
             "informacoes_adicionais": adicionais,
@@ -341,15 +393,28 @@ def _conteudo(state: ItemState, ctx: Contexto) -> dict[str, Any]:
 
 
 def _executar(req: gateway.RequisicaoLLM, ctx: Contexto) -> gateway.ResultadoLLM:
-    """Tempo real: chama a API. Lote: enfileira e interrompe o grafo até o resultado chegar."""
-    if ctx.modo != "lote":
-        return gateway.chamar_tempo_real(req)
-    existente = gateway.resultado_existente(req)
-    if isinstance(existente, gateway.ResultadoLLM):
-        return existente
-    if isinstance(existente, LlmCall) and existente.status == "falhou":
-        raise gateway.FalhaIA(existente.erro or "A requisição em lote falhou.")
-    gateway.enfileirar_lote(req)
+    """Tempo real: chama a API. Lote: enfileira e interrompe o grafo até o resultado chegar.
+
+    A chave é pelo conteúdo: uma trava garante que itens idênticos façam uma única chamada."""
+    from app.core.redis import redis_sync
+
+    trava = redis_sync().lock(f"trava:llm:{req.chave_idempotencia}", timeout=600, blocking_timeout=600)
+    trava.acquire()
+    try:
+        # Lote só existe para modelos com Batch API (Anthropic); os demais saem em tempo real.
+        if ctx.modo != "lote" or not gateway.suporta_lote(req.modelo):
+            return gateway.chamar_tempo_real(req)
+        existente = gateway.resultado_existente(req)
+        if isinstance(existente, gateway.ResultadoLLM):
+            return existente
+        if isinstance(existente, LlmCall) and existente.status == "falhou":
+            raise gateway.FalhaIA(existente.erro or "A requisição em lote falhou.")
+        gateway.enfileirar_lote(req)
+    finally:
+        try:
+            trava.release()
+        except Exception:  # noqa: S110
+            pass
     interrupt({"aguardando": "lote", "chave": req.chave_idempotencia})
     # Retomado pela tarefa coletora: o resultado já está gravado.
     existente = gateway.resultado_existente(req)
@@ -371,15 +436,16 @@ def julgar_coerencia(state: ItemState, runtime: Rt) -> dict[str, Any]:
     ctx = runtime.context
     _etapa(ctx, state.item_id, "julgar_coerencia")
     prompt = carregar("julgar_coerencia", ctx.prompts.get("julgar_coerencia"))
+    conteudo = _conteudo(state, ctx)
     req = gateway.RequisicaoLLM(
         no="julgar_coerencia",
         modelo=ctx.modelo_principal,
         prompt=prompt,
-        conteudo_usuario=_conteudo(state, ctx),
+        conteudo_usuario=conteudo,
         schema=SCHEMA_JULGAMENTO,
         validador=Julgamento,
         esforco=ctx.esforco_principal,
-        chave_idempotencia=f"item:{state.item_id}:t{state.tentativa}:julgar:{ctx.modelo_principal}:{prompt.rotulo}",
+        chave_idempotencia=chave_conteudo("julgar", ctx.modelo_principal, prompt.rotulo, conteudo),
         org_id=ctx.org_id,
         audit_id=ctx.audit_id,
         item_id=uuid.UUID(state.item_id),
@@ -414,9 +480,10 @@ def julgar_coerencia(state: ItemState, runtime: Rt) -> dict[str, Any]:
     sug = res.dados.get("codigo_sugerido")
     if sug is not None:
         pos = next((c.get("posicao") for c in state.candidatos if c["codigo"] == sug), None)
-        if pos is None or pos > 3:
+        # A IA escolheu um código que a busca mal considerou: só aí vale um segundo parecer.
+        if (pos is None or pos > 10) and res.dados["confianca"] < 0.95:
             gatilhos.append("divergencia_busca_julgamento")
-    if res.dados.get("sinais_de_duvida") and res.dados["confianca"] < 0.95:
+    if res.dados.get("sinais_de_duvida") and res.dados["confianca"] < 0.85:
         gatilhos.append("sinais_de_duvida")
     return {
         "julgamento": dados,
@@ -443,7 +510,7 @@ def escalar(state: ItemState, runtime: Rt) -> dict[str, Any]:
         schema=SCHEMA_ESCALONAMENTO,
         validador=Escalonamento,
         esforco=ctx.esforco_escalonamento,
-        chave_idempotencia=f"item:{state.item_id}:t{state.tentativa}:escalar:{ctx.modelo_escalonamento}:{prompt.rotulo}",
+        chave_idempotencia=chave_conteudo("escalar", ctx.modelo_escalonamento, prompt.rotulo, conteudo),
         org_id=ctx.org_id,
         audit_id=ctx.audit_id,
         item_id=uuid.UUID(state.item_id),
@@ -467,160 +534,3 @@ def escalar(state: ItemState, runtime: Rt) -> dict[str, Any]:
             "motivos": _add(motivos, Motivo.CODIGO_SUGERIDO_INVALIDO),
         }
     return {"escalonamento": dados, "escalonamento_valido": True, "llm_calls": [*state.llm_calls, str(res.call_id)]}
-
-
-# ------------------------------------------------------------------------------ enquadrar --
-def _mesclar_atributos(a: dict[str, str], b: dict[str, str] | None) -> dict[str, str]:
-    """Atributos divergentes entre as análises viram 'desconhecido' (postura conservadora)."""
-    if not b:
-        return a
-    saida = dict(a)
-    for k, v in b.items():
-        if k in saida and saida[k] != v:
-            saida[k] = "desconhecido"
-        else:
-            saida[k] = v
-    return saida
-
-
-def enquadrar(state: ItemState, runtime: Rt) -> dict[str, Any]:
-    ctx = runtime.context
-    _etapa(ctx, state.item_id, "enquadrar")
-    if state.memoria:
-        codigo, tipo_codigo = state.codigo_final, state.tipo_codigo_final
-        atributos = dict(state.atributos)
-    else:
-        j = state.julgamento if state.julgamento_valido else None
-        esc = state.escalonamento if state.escalonamento_valido else None
-        fonte = esc or j
-        if fonte is None:
-            return {"codigo_final": None, "enquadramento": {}}
-        codigo = fonte.get("codigo_sugerido")
-        tipo_codigo = next((c["tipo_codigo"] for c in state.candidatos if c["codigo"] == codigo), None)
-        atributos = AtributosExtraidos.model_validate(j["atributos_extraidos"]).como_dict() if j else {}
-        if esc:
-            atributos = _mesclar_atributos(
-                atributos, AtributosExtraidos.model_validate(esc["atributos_extraidos"]).como_dict()
-            )
-    if codigo is None or tipo_codigo is None:
-        return {"codigo_final": None, "tipo_codigo_final": None, "atributos": atributos, "enquadramento": {}}
-    r = aplicar_regras(
-        ctx.regras,
-        tipo_codigo,
-        codigo,
-        f"{state.descricao} {state.descricao_normalizada}",
-        {"item": atributos, "empresa": ctx.atributos_empresa, "operacao": ctx.contexto_operacao},
-        ctx.data_referencia,
-    )
-    enq = {
-        "cst": r.cst,
-        "cclasstrib": r.cclasstrib,
-        "tipo_tratamento": r.tipo_tratamento,
-        "dispositivo": r.dispositivo,
-        "regra": r.regra.resumo() if r.regra else None,
-        "motivos": r.motivos,
-        "perguntas": [p.como_dict() for p in r.perguntas],
-        "consideradas": r.consideradas,
-        "imposto_seletivo": r.imposto_seletivo,
-        "regra_seletivo": r.regra_seletivo.resumo() if r.regra_seletivo else None,
-        "certeza": r.certeza,
-    }
-    return {"codigo_final": codigo, "tipo_codigo_final": tipo_codigo, "atributos": atributos, "enquadramento": enq}
-
-
-# ------------------------------------------------------------------------ decidir_status --
-def decidir_status(state: ItemState, runtime: Rt) -> dict[str, Any]:
-    ctx = runtime.context
-    atual = (state.estrutura or {}).get("codigo_atual") or {}
-    codigo_atual = atual.get("provavel") or atual.get("codigo")
-    codigo_atual_valido = bool(atual.get("existe") and atual.get("folha") and atual.get("vigente", True))
-    pos = next((c.get("posicao") for c in state.candidatos if c["codigo"] == state.codigo_final), None)
-    with sync_tenant_session(ctx.tenant) as s:
-        item = s.get(AuditItem, uuid.UUID(state.item_id))
-        assert item is not None
-        entrada = EntradaDecisao(
-            motivos=list(state.motivos),
-            codigo_atual=codigo_atual,
-            codigo_atual_valido=codigo_atual_valido,
-            codigo_final=state.codigo_final,
-            memoria=state.memoria is not None,
-            julgamento=state.julgamento,
-            julgamento_valido=state.julgamento_valido,
-            escalonado=state.precisa_escalar and not state.memoria,
-            escalonamento=state.escalonamento,
-            escalonamento_valido=state.escalonamento_valido,
-            posicao_busca=pos,
-            enquadramento=state.enquadramento,
-            cst_atual=item.cst_atual,
-            cclasstrib_atual=item.cclasstrib_atual,
-            descricao_curta=bool((state.estrutura or {}).get("descricao_curta")),
-            busca_semantica=bool((state.busca or {}).get("semantica", state.memoria is not None)),
-            limiar_confirmado=ctx.limiar_confirmado,
-            limiar_corrigido=ctx.limiar_corrigido,
-            is_exige_analise=ctx.is_exige_analise,
-        )
-        if item.duplicado_de is not None:
-            entrada.motivos.append(Motivo.ITEM_DUPLICADO)
-        d = decidir(entrada)
-        enq = state.enquadramento or {}
-        custo = s.scalar(select(func.coalesce(func.sum(LlmCall.custo_usd), 0)).where(LlmCall.item_id == item.id))
-        item.descricao_normalizada = state.descricao_normalizada
-        item.tipo = state.tipo
-        item.estrutura = {
-            **(item.estrutura or {}),
-            **(state.estrutura or {}),
-            "expansoes": state.expansoes,
-            "busca": state.busca,
-            "gatilhos_escalonamento": state.gatilhos_escalonamento,
-        }
-        item.status = d.status
-        item.motivos = d.motivos
-        item.perguntas = enq.get("perguntas", [])
-        item.origem = "memoria_aprovada" if state.memoria else "pipeline"
-        item.memory_id = uuid.UUID(state.memoria["id"]) if state.memoria else None
-        item.tipo_codigo_sugerido = state.tipo_codigo_final
-        item.codigo_sugerido = state.codigo_final
-        item.cst_sugerido = enq.get("cst")
-        item.cclasstrib_sugerido = enq.get("cclasstrib")
-        item.regra_id = uuid.UUID(enq["regra"]["id"]) if enq.get("regra") else None
-        item.regras_consideradas = enq.get("consideradas", [])
-        item.tipo_tratamento = enq.get("tipo_tratamento")
-        item.dispositivo_legal = enq.get("dispositivo")
-        item.imposto_seletivo = bool(enq.get("imposto_seletivo"))
-        item.confianca = Decimal(str(d.confianca))
-        item.confianca_componentes = d.componentes
-        item.atributos = state.atributos
-        item.julgamento = state.julgamento or {}
-        item.escalonamento = state.escalonamento or {}
-        item.custo_usd = Decimal(str(custo or 0))
-        item.etapa = "concluido"
-        item.processado_em = datetime.now(UTC)
-        item.erro = state.falha_ia
-        s.execute(delete(ItemCandidate).where(ItemCandidate.item_id == item.id))
-        if state.candidatos:
-            s.execute(
-                insert(ItemCandidate),
-                [
-                    {
-                        "org_id": ctx.org_id,
-                        "item_id": item.id,
-                        "tipo_codigo": c["tipo_codigo"],
-                        "codigo": c["codigo"],
-                        "descricao_completa": c["descricao_completa"],
-                        "posicao": c.get("posicao") or 99,
-                        "rank_semantico": c.get("rank_semantico"),
-                        "rank_textual": c.get("rank_textual"),
-                        "score": Decimal(str(c.get("score") or 0)),
-                        "codigo_atual": bool(c.get("codigo_atual")),
-                    }
-                    for c in state.candidatos
-                ],
-            )
-    bus.publicar(ctx.audit_id, "item", {"item_id": state.item_id, "status": d.status})
-    return {
-        "status": d.status,
-        "motivos": d.motivos,
-        "confianca": d.confianca,
-        "confianca_componentes": d.componentes,
-        "concluido": True,
-    }

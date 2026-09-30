@@ -3,11 +3,13 @@ import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-route
 import { Command } from "cmdk";
 import {
   Bell,
+  Bot,
   Building2,
   ChevronsUpDown,
   ClipboardList,
   FileSearch,
   Home,
+  KeyRound,
   Landmark,
   LogOut,
   Moon,
@@ -120,6 +122,24 @@ export function AppShell() {
                 )}
               >
                 <Landmark className="size-4" aria-hidden /> Organizações
+              </Link>
+              <Link
+                to="/ia/modelos"
+                className={cn(
+                  "flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-tinta-2 hover:bg-superficie-2",
+                  caminho.startsWith("/ia/modelos") && "bg-superficie-2 font-medium text-tinta",
+                )}
+              >
+                <Bot className="size-4" aria-hidden /> Modelos de IA
+              </Link>
+              <Link
+                to="/ia/chaves"
+                className={cn(
+                  "flex items-center gap-2.5 rounded-md px-3 py-2 text-sm text-tinta-2 hover:bg-superficie-2",
+                  caminho.startsWith("/ia/chaves") && "bg-superficie-2 font-medium text-tinta",
+                )}
+              >
+                <KeyRound className="size-4" aria-hidden /> Chaves de API
               </Link>
             </>
           ) : null}

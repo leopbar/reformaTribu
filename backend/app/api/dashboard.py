@@ -16,7 +16,7 @@ from app.core.deps import Principal, SessionDep, exigir
 from app.core.errors import Conflito, NaoEncontrado, Proibido
 from app.core.rbac import Perm
 from app.models import Abbreviation, Audit, AuditItem, Company, MappingTemplate, OrgSettings
-from app.models.enums import StatusAuditoria, StatusItem, StatusRevisao
+from app.models.enums import STATUS_REVISAVEIS, StatusAuditoria, StatusItem, StatusRevisao
 
 router = APIRouter(tags=["painel"])
 Ver = Annotated[Principal, Depends(exigir(Perm.VER))]
@@ -30,7 +30,7 @@ class EmpresaPainel(BaseModel):
     auditorias: int
     em_andamento: int
     pendentes_revisao: int
-    analise_humana_pendente: int
+    aguardando_informacao: int
     ultima_auditoria_em: datetime | None
     ultima_auditoria_id: uuid.UUID | None
     ultima_auditoria_status: str | None
@@ -87,13 +87,13 @@ async def painel(principal: Ver, session: SessionDep) -> Painel:
                 select(
                     AuditItem.company_id,
                     func.count(),
-                    func.count().filter(AuditItem.status == StatusItem.ANALISE_HUMANA),
+                    func.count().filter(AuditItem.status == StatusItem.AGUARDANDO_INFORMACAO),
                 )
                 .where(
                     AuditItem.company_id.in_(ids),
                     AuditItem.ignorado.is_(False),
                     AuditItem.revisao_status == StatusRevisao.PENDENTE,
-                    AuditItem.status.in_([StatusItem.CONFIRMADO, StatusItem.CORRIGIDO, StatusItem.ANALISE_HUMANA]),
+                    AuditItem.status.in_(list(STATUS_REVISAVEIS)),
                 )
                 .group_by(AuditItem.company_id)
             )
@@ -123,7 +123,7 @@ async def painel(principal: Ver, session: SessionDep) -> Painel:
             auditorias=por_empresa.get(e.id, 0),
             em_andamento=andamento_por_emp.get(e.id, 0),
             pendentes_revisao=pend_d.get(e.id, (0, 0))[0],
-            analise_humana_pendente=pend_d.get(e.id, (0, 0))[1],
+            aguardando_informacao=pend_d.get(e.id, (0, 0))[1],
             ultima_auditoria_em=ultimas[e.id].created_at if e.id in ultimas else None,
             ultima_auditoria_id=ultimas[e.id].id if e.id in ultimas else None,
             ultima_auditoria_status=ultimas[e.id].status if e.id in ultimas else None,
@@ -158,7 +158,7 @@ async def painel(principal: Ver, session: SessionDep) -> Painel:
         totais={
             "empresas": len(empresas),
             "pendentes_revisao": sum(p[0] for p in pend_d.values()),
-            "analise_humana": sum(p[1] for p in pend_d.values()),
+            "aguardando_informacao": sum(p[1] for p in pend_d.values()),
             "gasto_mes_usd": await gasto_mes(session, principal.exigir_org())
             if principal.papel == "administrador"
             else None,

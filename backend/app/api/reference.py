@@ -108,8 +108,17 @@ class VersaoOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AtoNormativoOut(BaseModel):
+    chave: str
+    rotulo: str
+    ementa: str
+    url: str
+    versao: VersaoOut | None
+
+
 class StatusBase(BaseModel):
     fontes: dict[str, VersaoOut | None]
+    atos_normativos: list[AtoNormativoOut]
     completa: bool
     faltando: list[str]
     regras: dict[str, int]
@@ -118,8 +127,12 @@ class StatusBase(BaseModel):
 
 @router.get("/referencia/status", response_model=StatusBase)
 async def status_base(principal: PrincipalDep, session: SessionDep) -> StatusBase:
+    from app.reference.importers.normas import CATALOGO
+
     fontes: dict[str, VersaoOut | None] = {}
     for f in FonteReferencia:
+        if f == FonteReferencia.NORMAS:
+            continue
         v = await session.scalar(
             select(RefVersion)
             .where(RefVersion.fonte == f.value, RefVersion.status == StatusVersao.ATIVA)
@@ -127,12 +140,32 @@ async def status_base(principal: PrincipalDep, session: SessionDep) -> StatusBas
             .limit(1)
         )
         fontes[f.value] = VersaoOut.model_validate(v) if v else None
+    atos_ativos = {
+        v.rotulo: v
+        for v in await session.scalars(
+            select(RefVersion).where(RefVersion.fonte == "normas", RefVersion.status == StatusVersao.ATIVA)
+        )
+    }
+    atos = [
+        AtoNormativoOut(
+            chave=a.chave,
+            rotulo=a.rotulo,
+            ementa=a.ementa,
+            url=a.url,
+            versao=VersaoOut.model_validate(atos_ativos[a.rotulo]) if a.rotulo in atos_ativos else None,
+        )
+        for a in CATALOGO
+    ]
     regras = dict((await session.execute(select(LegalRule.status, func.count()).group_by(LegalRule.status))).all())
+    # Regras aprovadas não são mais pré-requisito: o analista raciocina a partir do texto legal e das tabelas.
     faltando = [f for f, v in fontes.items() if v is None]
-    if not regras.get(StatusRegra.APROVADA):
-        faltando.append("regras_aprovadas")
     return StatusBase(
-        fontes=fontes, completa=not faltando, faltando=faltando, regras=regras, instrucoes=INSTRUCOES_UPLOAD
+        fontes=fontes,
+        atos_normativos=atos,
+        completa=not faltando,
+        faltando=faltando,
+        regras=regras,
+        instrucoes=INSTRUCOES_UPLOAD,
     )
 
 
@@ -167,6 +200,26 @@ async def importar(dados: ImportarIn, principal: SuperAdminDep, session: RefSess
         queue="reference",
     )
     return TarefaOut(tarefa_id=r.id, mensagem="Importação iniciada. Acompanhe na lista de versões.")
+
+
+class ImportarAtoIn(BaseModel):
+    chave: str = Field(max_length=40)
+
+
+@router.post("/referencia/importar-ato", response_model=TarefaOut, status_code=202)
+async def importar_ato(dados: ImportarAtoIn, principal: SuperAdminDep, session: RefSessionDep) -> TarefaOut:
+    from app.reference.importers.normas import ato_por_chave
+
+    try:
+        ato = ato_por_chave(dados.chave)
+    except ValueError as e:
+        raise AppError(str(e)) from e
+    r = celery_app.send_task(
+        "referencia.importar_ato",
+        kwargs={"chave": ato.chave, "usuario_id": str(principal.user_id), "usuario_email": principal.email},
+        queue="reference",
+    )
+    return TarefaOut(tarefa_id=r.id, mensagem=f"Importação de {ato.rotulo} iniciada.")
 
 
 @router.post("/referencia/upload", response_model=TarefaOut, status_code=202)

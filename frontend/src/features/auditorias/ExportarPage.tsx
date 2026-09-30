@@ -44,7 +44,7 @@ export function ExportarPage() {
           </Link>
         }
         titulo="Exportar"
-        subtitulo="Somente itens aprovados entram na exportação final para o sistema de gestão."
+        subtitulo="Somente itens aprovados (por um revisor ou automaticamente, com confiança alta) entram na exportação final."
       />
       <div className="grid gap-6 lg:grid-cols-[1fr_24rem]">
         <div className="grid gap-6">
@@ -57,7 +57,11 @@ export function ExportarPage() {
           )}
           <Painel className="p-5">
             <h2 className="text-base">Planilha para o sistema de gestão</h2>
-            <p className="mt-1 text-sm text-tinta-3">{fmtNum(aprovados)} itens aprovados serão exportados com o layout escolhido.</p>
+            <p className="mt-1 text-sm text-tinta-3">
+              {fmtNum(aprovados)} itens aprovados serão exportados. O XLSX tem três abas: a planilha para o ERP (no layout escolhido),
+              o <strong>cadastro enriquecido</strong> (o que cada item é: código, descrição oficial, problemas do cadastro antigo) e o{" "}
+              <strong>perfil tributário</strong> (como é tributado na venda ao consumidor, na vigência da auditoria, com o fundamento).
+            </p>
             <div className="mt-4 flex flex-wrap items-end gap-3">
               <Campo rotulo="Layout" className="w-64">
                 <Select aria-label="Layout" valor={layout} aoMudar={setLayout} opcoes={[{ valor: "padrao", rotulo: "Layout padrão" }, ...(layouts.data?.layouts ?? []).map((l) => ({ valor: l.id, rotulo: l.nome }))]} />

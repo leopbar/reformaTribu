@@ -25,24 +25,32 @@ def ouro(codigo: str, cct: str | None = None) -> ItemOuro:
 
 def res(o: ItemOuro, status: str, codigo: str | None, cct: str | None = None) -> Resultado:
     return Resultado(
-        ouro=o, status=status, codigo=codigo, cclasstrib=cct, confianca=0.95, escalonado=False, custo=0.01, segundos=1.0
+        ouro=o,
+        status=status,
+        codigo=codigo,
+        cclasstrib=cct,
+        confianca="alta",
+        escalonado=False,
+        custo=0.01,
+        segundos=1.0,
     )
 
 
-def test_falso_confirmado_e_a_metrica_principal():
+def test_falso_classificado_e_a_metrica_principal():
     rs = [
-        res(ouro("34011190", "200035"), "confirmado", "34011190", "200035"),
-        res(ouro("34013000"), "confirmado", "34011190"),  # falso confirmado
-        res(ouro("20096100"), "analise_humana", "20096100"),
-        res(ouro("19053100"), "corrigido", "19059020"),  # falso corrigido (acerta a posição 1905)
+        res(ouro("34011190", "200035"), "classificado", "34011190", "200035"),
+        res(ouro("34013000"), "classificado", "34011190"),  # falso classificado
+        res(ouro("20096100"), "aguardando_informacao", "20096100"),
+        res(ouro("19053100"), "revisao_contador", "19059020"),  # errado, mas foi para revisão
     ]
     m = metricas(rs)
-    assert m["taxa_falsos_confirmados"] == 0.25
-    assert m["falsos_confirmados_entre_confirmados"] == 0.5
-    assert m["taxa_falsos_corrigidos"] == 0.25
+    assert m["taxa_falsos_classificados"] == 0.25
+    assert m["falsos_entre_classificados"] == 0.5
+    assert m["taxa_classificados"] == 0.5
+    assert m["taxa_aguardando_informacao"] == 0.25
+    assert m["taxa_revisao"] == 0.25
     assert m["acerto_ncm_4_digitos"] == 1.0
     assert m["acerto_ncm_8_digitos"] == 0.5
-    assert m["taxa_analise_humana"] == 0.25
 
 
 def test_exemplo_marcado_como_nao_validado():

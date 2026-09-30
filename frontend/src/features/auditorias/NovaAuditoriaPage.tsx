@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { FileSpreadsheet, UploadCloud, Wand2 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -7,6 +7,7 @@ import { api, ok, requisicao, type Schemas } from "@/api/client";
 import { Cabecalho, mensagemErro } from "@/components/dominio";
 import { Aviso, Button, Campo, Checkbox, Input, Label, Painel, Select } from "@/components/ui/primitives";
 import { fmtNum } from "@/lib/format";
+import { useDossie } from "@/features/empresas/DossieEmpresa";
 import { cn } from "@/lib/utils";
 
 type Upload = Schemas["UploadOut"];
@@ -104,6 +105,7 @@ function EnvioArquivo({
       <Campo rotulo="Empresa auditada">
         <Select aria-label="Empresa auditada" valor={empresa} aoMudar={setEmpresa} opcoes={empresas} placeholder="Escolha a empresa" />
       </Campo>
+      {empresa ? <AvisoDossie empresa={empresa} /> : null}
       <div
         onDragOver={(e) => {
           e.preventDefault();
@@ -148,7 +150,8 @@ function Mapeamento({
 }) {
   const [mapa, setMapa] = useState<Record<string, string | null>>(upload.mapeamento_sugerido);
   const [nome, setNome] = useState(() => `${upload.nome.replace(/\.[^.]+$/, "")} — ${new Date().toLocaleDateString("pt-BR")}`);
-  const [dataRef, setDataRef] = useState(() => new Date().toISOString().slice(0, 10));
+  // A classificação vale para uma data: por padrão, o início da cobrança da CBS (1º/1/2027).
+  const [dataRef, setDataRef] = useState(() => (new Date() < new Date("2027-01-01") ? "2027-01-01" : new Date().toISOString().slice(0, 10)));
   const [salvarModelo, setSalvarModelo] = useState(false);
   const [sistema, setSistema] = useState("");
   const usadas = useMemo(() => new Set(Object.values(mapa).filter(Boolean)), [mapa]);
@@ -305,7 +308,7 @@ function Mapeamento({
           <Campo rotulo="Nome da auditoria" htmlFor="nome">
             <Input id="nome" value={nome} onChange={(e) => setNome(e.target.value)} />
           </Campo>
-          <Campo rotulo="Data de referência legal" htmlFor="dref" ajuda="Define quais tabelas e regras vigentes são aplicadas.">
+          <Campo rotulo="Vigência da classificação" htmlFor="dref" ajuda="A classificação vale para esta data: define as tabelas, a lei e a fase da transição aplicadas (2027 é o início da CBS).">
             <Input id="dref" type="date" value={dataRef} onChange={(e) => setDataRef(e.target.value)} />
           </Campo>
           <label className="flex items-center gap-2 text-sm sm:col-span-2">
@@ -330,5 +333,20 @@ function Mapeamento({
         </div>
       </div>
     </div>
+  );
+}
+
+/** O analista precisa conhecer quem vende antes de olhar os itens. */
+function AvisoDossie({ empresa }: { empresa: string }) {
+  const q = useDossie(empresa);
+  if (!q.data || q.data.completo) return null;
+  return (
+    <Aviso tom="atencao" titulo="O dossiê desta empresa está incompleto">
+      Sem ele, o analista vai perguntar durante a análise (por exemplo, se a loja produz alimentos). Leva um minuto:{" "}
+      <Link to="/empresas/$id" params={{ id: empresa }} className="underline">
+        preencher o dossiê
+      </Link>
+      .
+    </Aviso>
   );
 }

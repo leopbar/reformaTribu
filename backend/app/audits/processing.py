@@ -16,15 +16,16 @@ from app.events import bus
 from app.llm.budget import OrcamentoExcedido
 from app.llm.gateway import ChaveAPIAusente
 from app.models import Audit, AuditItem, Notification
-from app.models.enums import StatusAuditoria, StatusItem
+from app.models.enums import STATUS_FINAIS, StatusAuditoria, StatusItem
 from app.pipeline.context import carregar_contexto
 from app.pipeline.reasons import Motivo
 from app.pipeline.runner import AGUARDANDO_LOTE, processar_item
 from app.worker.celery_app import celery_app
 
 log = structlog.get_logger()
-TAMANHO_BLOCO = 50
-FINAIS = (StatusItem.CONFIRMADO, StatusItem.CORRIGIDO, StatusItem.ANALISE_HUMANA, StatusItem.ERRO)
+# Blocos pequenos: os itens se distribuem entre os processos do worker (a IA é o gargalo, não o banco).
+TAMANHO_BLOCO = 10
+FINAIS = STATUS_FINAIS
 
 
 def enfileirar_itens(audit_id: uuid.UUID, org_id: uuid.UUID, item_ids: list[uuid.UUID]) -> None:
@@ -67,7 +68,8 @@ def processar_itens(audit_id: uuid.UUID, org_id: uuid.UUID, item_ids: list[uuid.
                 )
             ).all()
         )
-    ctx = carregar_contexto(audit_id, org_id)
+    # Recarrega a cada bloco: mudanças de configuração (ex.: "refazer pareceres") valem logo.
+    ctx = carregar_contexto(audit_id, org_id, forcar=True)
     aguardando: list[uuid.UUID] = []
     for item_id in item_ids:
         if item_id not in tentativas:
@@ -132,7 +134,21 @@ def atualizar_contadores(audit_id: uuid.UUID, org_id: uuid.UUID) -> dict[str, An
             ),
             {"a": audit_id},
         ).one()
+        perguntas = sess.execute(
+            text(
+                "SELECT count(*), coalesce(sum(cardinality(item_ids)), 0) FROM pendencias "
+                "WHERE audit_id = :a AND status = 'aberta'"
+            ),
+            {"a": audit_id},
+        ).one()
+        familias = sess.scalar(
+            text("SELECT count(DISTINCT thesis_id) FROM audit_items WHERE audit_id = :a AND thesis_id IS NOT NULL"),
+            {"a": audit_id},
+        )
         contadores = {
+            "perguntas_abertas": int(perguntas[0]),
+            "itens_em_perguntas": int(perguntas[1]),
+            "familias": int(familias or 0),
             "por_status": dict(por_status),
             "por_etapa": dict(por_etapa),
             "motivos": {m: int(n) for m, n in motivos},
@@ -180,8 +196,9 @@ def concluir_se_terminado(audit_id: uuid.UUID, org_id: uuid.UUID) -> bool:
                 user_id=audit.created_by,
                 tipo="auditoria_concluida",
                 titulo="Auditoria concluída",
-                mensagem=f"“{audit.nome}” terminou: {c.get('confirmado', 0)} confirmados, {c.get('corrigido', 0)} "
-                f"corrigidos e {c.get('analise_humana', 0)} para análise humana.",
+                mensagem=f"“{audit.nome}” terminou: {c.get('classificado', 0)} classificados, "
+                f"{c.get('aguardando_informacao', 0)} aguardando informação e "
+                f"{c.get('revisao_contador', 0) + c.get('revisao_especialista', 0)} em revisão.",
                 link=f"/auditorias/{audit_id}",
             )
         )

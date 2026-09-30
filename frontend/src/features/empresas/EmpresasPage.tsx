@@ -12,6 +12,7 @@ import { Cabecalho, EstadoErro, EstadoVazio, mensagemErro } from "@/components/d
 import { Button, Campo, Dialog, DialogContent, DialogTrigger, Input, Painel, Select, Skeleton } from "@/components/ui/primitives";
 import { fmtCnpj, fmtDataHora, fmtNum, fmtUSD } from "@/lib/format";
 import { ROTULO_STATUS_AUDITORIA } from "@/features/auditorias/comum";
+import { DossieEmpresa } from "./DossieEmpresa";
 
 const REGIMES = [
   { valor: "mei", rotulo: "MEI" },
@@ -53,7 +54,7 @@ export function EmpresasPage() {
     <>
       <Cabecalho
         titulo="Empresas auditadas"
-        subtitulo="Cada empresa tem as próprias auditorias, a memória de classificações aprovadas e os modelos de planilha."
+        subtitulo="Cada empresa tem o próprio dossiê (quem vende e como vende), as auditorias, os fatos já confirmados e a memória de classificações aprovadas."
         acoes={pode("gerenciar_empresas") ? <NovaEmpresa /> : null}
       />
       {q.isError ? <EstadoErro erro={q.error} aoTentar={() => void q.refetch()} /> : null}
@@ -186,6 +187,7 @@ export function EmpresaDetalhePage() {
           ) : null
         }
       />
+      <DossieEmpresa companyId={e.id} />
       <Painel>
         <h2 className="border-b border-regua px-5 py-3 text-base">Auditorias</h2>
         {auds.data?.length === 0 ? (

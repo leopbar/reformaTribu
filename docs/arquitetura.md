@@ -38,44 +38,106 @@ flowchart LR
 - Progresso em tempo real: o worker publica eventos no Redis; a API os repassa por Server-Sent Events
   (o frontend usa `fetch` com streaming, pois o `EventSource` nativo não envia o cabeçalho de autorização).
 
-## Pipeline de auditoria (LangGraph)
+## O analista fiscal (LangGraph)
+
+O sistema funciona como um **analista fiscal digital**, não como um conversor de códigos. A unidade de
+análise é **item + empresa + operação + data + condições**. A saída (CST/cClassTrib) vem **depois** de um
+enquadramento jurídico explicado, nunca direto do NCM.
 
 Um grafo por item, com estado tipado (`ItemState`, Pydantic) e checkpoint no PostgreSQL
-(`PostgresSaver`). O contexto de execução (snapshot da base, regras, limiares, modelos) é passado
+(`PostgresSaver`). O contexto de execução (snapshot da base, dossiê da empresa, modelos) é passado
 como `context` do LangGraph e reconstruído a cada execução.
 
 ```mermaid
 flowchart TD
-  S([início]) --> N[normalizar<br/>abreviações do dicionário; tipo produto/serviço]
-  N --> V[validar_estrutura<br/>existe? folha? vigente? zero à esquerda?]
-  V -- base incompleta --> D
-  V --> M[buscar_memoria<br/>classificação aprovada da mesma empresa]
-  M -- achou --> E
+  S([início]) --> N[normalizar<br/>abreviações; tipo produto/serviço]
+  N --> V[validar_estrutura<br/>o cadastro antigo é evidência: existe? vigente? zero à esquerda?]
+  V -- base incompleta --> C
+  V --> M[buscar_memoria<br/>identidade aprovada antes na empresa]
+  M -- achou --> I
   M -- não achou --> R[recuperar_candidatos<br/>pgvector + tsvector pt + RRF]
-  R -- nenhum --> D
-  R --> J[julgar_coerencia<br/>Claude, saída JSON Schema, só candidatos]
-  J -- resposta inválida --> D
-  J -- baixa confiança, incoerente, sem código,<br/>divergência com a busca, dúvidas --> X[escalar<br/>parecer independente]
-  J --> E
-  X --> E[enquadrar<br/>motor de regras declarativo]
-  E --> D[decidir_status<br/>portões + confiança calibrada + gravação]
-  D --> F([fim])
+  R -- nenhum --> C
+  R --> J[julgar_coerencia<br/>o que o item É: NCM/NBS entre candidatos oficiais]
+  J -- resposta inválida --> C
+  J -- dúvida --> X[escalar<br/>parecer independente]
+  J --> I
+  X --> I[investigar<br/>TESE DA FAMÍLIA: hipóteses, condições,<br/>exceções e trechos citados — 1 vez por família]
+  I -- tese --> L[levantar_fatos<br/>fatos explícitos na descrição/ERP<br/>suposição não vira fato]
+  I -- sem tese --> C
+  L --> C[concluir<br/>aplica a tese aos fatos; confiança por dimensão;<br/>perguntas decisivas; perfil tributário versionado]
+  C --> F([fim])
 ```
+
+**Dossiê do estabelecimento** (`app/analise/dossie.py`). Antes de olhar os itens, o analista conhece quem
+vende (segmento, produção própria, fornecimento de refeições...). As respostas são fatos de escopo
+"empresa", valem para todos os itens e todas as auditorias seguintes, e entram na chave das teses.
+
+**Fatos com origem** (`company_facts`, `app/analise/fatos.py`). Cada fato tem escopo (empresa, grupo, item),
+origem (pessoa, ERP, cadastro, texto explícito da descrição) e autor. Precedência: item > categoria do ERP >
+família (NCM) > empresa. Hipótese não é fato: o que a IA apenas supõe vira **sugestão** numa pergunta.
+
+**Tese por família** (`tax_theses`, `app/analise/evidencias.py` + `investigacao.py`). Para cada combinação
+código + cenário + dossiê + data + base, o modelo de investigação recebe um pacote de evidências montado de
+forma determinística (as "ferramentas" do agente): descrição oficial do código, correlação oficial
+cClassTrib × NCM/NBS, itens de anexos que citam o código, artigos relevantes da LC 214/2025 e dos demais atos
+(EC 132/2023, LC 227/2026, Decreto 12.955/2026) por busca semântica e textual, os cClassTrib candidatos
+(lista fechada), precedentes aprovados e alertas de divergência. A resposta são **hipóteses em ordem de
+precedência** (a última é sempre a regra geral), cada uma com condições (fatos), exceções e fundamentos que
+citam as referências do pacote. A validação descarta cClassTrib fora da lista e marca citações inexistentes.
+A tese é reaproveitada por todos os itens da família, inclusive em auditorias seguintes — é isso que
+torna o processo viável com dezenas de milhares de itens.
+
+**Avaliação** (`app/analise/avaliacao.py`, função pura). Percorre as hipóteses: condição com fato
+diferente ou exceção confirmada afasta a hipótese; todas confirmadas a escolhem; fato desconhecido mantém
+a hipótese possível — e, se as alternativas restantes levam a cClassTrib diferentes, nasce uma
+**pergunta decisiva** com o efeito de cada resposta ("se sim → Anexo I; se não → tributação integral").
+Perguntas que não mudam o resultado não são feitas.
+
+**Confiança por dimensão**, sem número mágico: identificação, NCM/NBS, contexto comercial, regra jurídica,
+condições, exceções, cClassTrib (existe, vigente, CST e documento compatíveis), fonte oficial, conflito
+normativo e Imposto Seletivo. Resultado e nível de revisão:
+
+| Situação | Quando | Quem resolve |
+|---|---|---|
+| Classificado | todas as dimensões confirmadas | ninguém (aprovação automática, se ligada) |
+| Aguardando informação | falta um fato que muda o enquadramento | operador responde a pergunta |
+| Revisão do contador | dúvida de identificação, NCM corrigido sem confirmação, IS, ponto de atenção | contador |
+| Revisão do especialista | conflito entre fontes, nenhuma hipótese sustentada, fundamento inválido | especialista tributário |
+
+**Perguntas agrupadas** (`pendencias`). Cada pergunta é feita no escopo mais amplo: empresa, categoria do
+ERP ou família (NCM). A resposta vira fato do grupo e **reavalia só os itens afetados, sem IA**
+(`aplicacao.reavaliar`). "Varia por item" permite responder item a item.
+
+**Perfil tributário versionado** (`tax_profiles`). Item × cenário × vigência: CST, cClassTrib, reduções,
+Imposto Seletivo, hipótese, conclusão, dimensões e o registro completo (fatos usados, fundamentos, tese,
+modelo, prompt, versões da base). Cada reavaliação que muda o resultado cria uma versão nova; nada é
+sobrescrito. `GET /itens/{id}/dossie` reconstrói o **dossiê de decisão** para auditoria.
+
+**Economia de IA.** O analista evita chamar a IA sempre que pode, sem abrir mão da segurança:
+
+- **Confirmação sem IA**: se o NCM/NBS informado existe, está vigente e é o primeiro colocado nas duas
+  buscas independentes (por significado e por palavras) a partir da descrição, fica confirmado sem IA.
+  Basta um sinal divergir (ex.: "sabonete líquido" com NCM de sabonete em barra) para ir à IA.
+- **Descrições repetidas**: a marca comercial e o GTIN não entram na análise (não definem o NCM), e as
+  chamadas usam chave de idempotência pelo **conteúdo**: itens iguais de marcas diferentes compartilham
+  uma única resposta (inclusive entre auditorias). Uma trava no Redis evita chamadas duplicadas simultâneas.
+- **Segundo parecer só em dúvida real**: código atual incoerente ou ausente, confiança abaixo do limite,
+  ou escolha fora do que a busca considerou.
+- **Teses compartilhadas na organização**: a chave da tese não inclui a empresa, só o dossiê relevante
+  (segmento, regime e respostas); empresas com o mesmo perfil reaproveitam a investigação.
+- **Modelos por papel**: Haiku na identificação e nos fatos; Sonnet no segundo parecer e na investigação
+  (esforço `medium`). A estimativa antes de iniciar mostra a economia prevista (`previsao`).
 
 **Batch API.** Em auditorias acima do limite configurado, os nós de IA gravam a requisição em
 `llm_calls` (status `na_fila`) e chamam `interrupt()`. A tarefa `llm.coletar_lotes` (a cada 30 s)
 agrupa por auditoria e modelo, envia o lote, consulta o andamento e, quando termina, **grava cada
-resposta antes** de retomar os grafos (`Command(resume=...)`). Na retomada o nó encontra a resposta
-gravada e não chama a API de novo.
+resposta antes** de retomar os grafos. A tese de família tem uma única chamada (chave `tese:<família>`)
+compartilhada por todos os itens que esperam por ela.
 
-**Idempotência e retomada.** Cada chamada tem chave `item:<id>:t<tentativa>:<nó>:<modelo>:<prompt>`
-(única no banco). Se o worker cair, o Celery reentrega a tarefa (`acks_late`) ou o beat reenfileira o
-item; o grafo retoma do checkpoint e a resposta já paga é reutilizada. Isso é coberto por testes.
-
-**Decisão e confiança.** Portões rígidos primeiro (motivos bloqueantes levam à análise humana); depois
-a confiança composta (`calibracao.json`): modelo, posição na busca, concordância entre etapas, certeza
-da regra, qualidade da descrição e validade do código atual. Mudança de código só vira **Corrigido**
-com o segundo parecer concordando. Detalhes em `backend/app/pipeline/decision.py`.
+**Idempotência e retomada.** Cada chamada tem chave única (`item:<id>:t<tentativa>:<nó>:...` ou
+`tese:<família>`). Se o worker cair, o Celery reentrega a tarefa (`acks_late`) ou o beat reenfileira o
+item; o grafo retoma do checkpoint e a resposta já paga é reutilizada. Em tempo real, uma trava no Redis
+garante uma única investigação por família. Isso é coberto por testes.
 
 ## Modelo de dados
 
@@ -103,14 +165,20 @@ erDiagram
   LLM_BATCHES ||--o{ LLM_CALLS : agrupa
   AUDIT_ITEMS ||--o{ ITEM_REVIEWS : "decisões (somente inserção)"
   ITEM_REVIEWS ||--o| APPROVED_MEMORY : alimenta
+  COMPANIES ||--o{ COMPANY_FACTS : "dossiê e fatos"
+  COMPANIES ||--o{ TAX_THESES : "teses por família"
+  TAX_THESES ||--o{ AUDIT_ITEMS : aplica
+  AUDITS ||--o{ PENDENCIAS : pergunta
+  AUDIT_ITEMS ||--o{ TAX_PROFILES : "perfil versionado"
   AUDITS ||--o{ EXPORT_JOBS : exporta
 ```
 
 | Grupo | Tabelas | Observações |
 |---|---|---|
 | Tenancy | `organizations`, `org_settings`, `users`, `memberships`, `company_access`, `companies`, `refresh_tokens`, `notifications` | Usuário pode ter vínculo com várias organizações, com um papel em cada. |
-| Base de referência (global) | `ref_versions`, `ncm_nodes`, `nbs_nodes`, `cst_codes`, `cclasstrib_codes`, `cclasstrib_correlacoes`, `legal_provisions`, `legal_rules`, `legal_rule_codes`, `condition_attributes`, `ref_snapshots` | Nunca sobrescrita. `ref_snapshots` fixa as versões e regras aprovadas usadas por uma auditoria. |
+| Base de referência (global) | `ref_versions`, `ncm_nodes`, `nbs_nodes`, `cst_codes`, `cclasstrib_codes`, `cclasstrib_correlacoes`, `legal_provisions`, `legal_rules`, `legal_rule_codes`, `condition_attributes`, `ref_snapshots` | Nunca sobrescrita. `legal_provisions` guarda os trechos da LC 214/2025 e dos demais atos (fonte `normas`), com vigência, busca textual e embeddings. `ref_snapshots` fixa as versões usadas por uma auditoria. |
 | Auditoria | `uploaded_files`, `mapping_templates`, `audits`, `audit_items`, `item_candidates`, `item_reviews`, `approved_memory` | `item_reviews` é somente inserção (gatilho bloqueia UPDATE). |
+| Analista fiscal | `company_facts`, `tax_theses`, `pendencias`, `tax_profiles` | Fatos com origem e histórico; teses reaproveitáveis; perguntas agrupadas; perfis versionados (dossiê de decisão). |
 | IA | `llm_calls`, `llm_batches` | Modelo, versão do prompt, tokens (entrada, saída, cache), custo, latência, request id. |
 | Exportação | `export_jobs`, `export_layouts` | |
 | Auditoria do sistema | `audit_log` | Somente inserção, encadeado por hash (gatilho `audit_log_encadear`). |
@@ -133,8 +201,9 @@ erDiagram
 ```
 backend/            FastAPI, Celery, LangGraph, SQLAlchemy, Alembic, testes
   app/api/          rotas REST e SSE
-  app/pipeline/     grafo, nós, decisão, confiança, contexto, execução
-  app/rules/        esquema declarativo, motor, validação, geração oficial, extração assistida
+  app/pipeline/     grafo, nós de identificação e do analista, contexto, execução
+  app/analise/      dossiê, fatos, evidências, investigação, avaliação, perguntas, perfis, transição
+  app/rules/        regras curadas (precedentes opcionais), validação, divergências lei × tabela
   app/reference/    importadores, busca híbrida, snapshots, embeddings
   app/ingest/       leitura de planilhas, mapeamento, limpeza, estimativa
   app/llm/          gateway, Batch API, preços, orçamento, prompts, esquemas

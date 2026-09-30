@@ -27,6 +27,7 @@ class FonteReferencia(StrEnum):
     NBS = "nbs"
     CCLASSTRIB = "cclasstrib"
     LC214 = "lc214"
+    NORMAS = "normas"  # demais atos normativos (EC 132/2023, leis complementares, decretos)
 
 
 class StatusVersao(StrEnum):
@@ -96,10 +97,55 @@ class TipoItem(StrEnum):
 class StatusItem(StrEnum):
     PENDENTE = "pendente"
     PROCESSANDO = "processando"
-    CONFIRMADO = "confirmado"
-    CORRIGIDO = "corrigido"
-    ANALISE_HUMANA = "analise_humana"
+    # Resultado do analista: todas as dimensões de confiança estão confirmadas.
+    CLASSIFICADO = "classificado"
+    # Falta um fato que muda o enquadramento: há uma pergunta aberta.
+    AGUARDANDO_INFORMACAO = "aguardando_informacao"
+    # Dúvida de identificação ou de cadastro: confirmação pelo contador.
+    REVISAO_CONTADOR = "revisao_contador"
+    # Dúvida jurídica, conflito entre fontes ou nenhuma hipótese sustentada.
+    REVISAO_ESPECIALISTA = "revisao_especialista"
     ERRO = "erro"
+
+
+STATUS_FINAIS = (
+    StatusItem.CLASSIFICADO,
+    StatusItem.AGUARDANDO_INFORMACAO,
+    StatusItem.REVISAO_CONTADOR,
+    StatusItem.REVISAO_ESPECIALISTA,
+    StatusItem.ERRO,
+)
+# Itens com resultado que uma pessoa pode revisar (erro exige reprocessamento).
+STATUS_REVISAVEIS = STATUS_FINAIS[:-1]
+
+
+class NivelRevisao(StrEnum):
+    OPERACIONAL = "operacional"  # responde fatos simples (produção própria? embalagem?)
+    CONTADOR = "contador"  # confirma identificação e enquadramento
+    ESPECIALISTA = "especialista"  # resolve conflito jurídico
+
+
+class Cenario(StrEnum):
+    VENDA_CONSUMIDOR = "venda_consumidor"
+
+
+class EscopoFato(StrEnum):
+    EMPRESA = "empresa"
+    GRUPO = "grupo"
+    ITEM = "item"
+
+
+class OrigemFato(StrEnum):
+    USUARIO = "usuario"  # resposta de uma pessoa (dossiê, pergunta, revisão)
+    ERP = "erp"  # campo da planilha do ERP
+    DESCRICAO = "descricao"  # explícito na descrição do item (o trecho fica como evidência)
+    CADASTRO = "cadastro"  # dados cadastrais da empresa (regime, UF, CNAE)
+
+
+class StatusPendencia(StrEnum):
+    ABERTA = "aberta"
+    RESPONDIDA = "respondida"
+    DESCARTADA = "descartada"
 
 
 class StatusRevisao(StrEnum):

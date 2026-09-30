@@ -25,9 +25,11 @@ from app.core.errors import AppError, Conflito, NaoEncontrado
 from app.core.rbac import Perm
 from app.core.redis import redis_async
 from app.events.bus import canal_auditoria
+from app.ingest import estimate
 from app.ingest.mapping import CAMPOS, assinatura_colunas, sugerir_mapeamento, validar_mapeamento
 from app.ingest.reader import ArquivoInvalido, ler_planilha
-from app.llm.gateway import ChaveAPIAusente, cliente
+from app.llm import catalogo
+from app.llm.gateway import ChaveAPIAusente, verificar_chaves
 from app.models import (
     Audit,
     AuditItem,
@@ -43,7 +45,7 @@ from app.models import (
     RefSnapshot,
     UploadedFile,
 )
-from app.models.enums import StatusAuditoria, StatusItem, StatusRevisao
+from app.models.enums import STATUS_REVISAVEIS, StatusAuditoria, StatusRevisao
 from app.pipeline.reasons import TEXTOS
 from app.reference.snapshot import criar_ou_obter
 from app.storage import files
@@ -299,6 +301,19 @@ async def _carregar_auditoria(session: AsyncSession, principal: Principal, audit
     return a
 
 
+def estimativa_atual(a: Audit) -> dict[str, Any]:
+    """Antes de iniciar, a estimativa acompanha os modelos escolhidos agora em "Modelos de IA"."""
+    est = a.estimativa or {}
+    previsao = (a.problemas_resumo or {}).get("previsao_ia")
+    if a.status not in (StatusAuditoria.PRONTA, StatusAuditoria.PAUSADA_ORCAMENTO, StatusAuditoria.FALHOU):
+        return est
+    if not previsao or a.iniciado_em is not None:
+        return est
+    taxa = est.get("taxa_escalonamento") or (est.get("tempo_real") or {}).get("taxa_escalonamento") or 0.4
+    limite = est.get("limite_lote") or (est.get("tempo_real") or {}).get("limite_lote") or 200
+    return estimate.estimativas(previsao, float(taxa), int(limite))
+
+
 async def _saida(session: AsyncSession, a: Audit, principal: Principal) -> AuditoriaOut:
     empresa = await session.get(Company, a.company_id)
     arquivo = await session.get(UploadedFile, a.file_id) if a.file_id else None
@@ -310,7 +325,7 @@ async def _saida(session: AsyncSession, a: Audit, principal: Principal) -> Audit
             AuditItem.audit_id == a.id,
             AuditItem.ignorado.is_(False),
             AuditItem.revisao_status == StatusRevisao.PENDENTE,
-            AuditItem.status.in_([StatusItem.CONFIRMADO, StatusItem.CORRIGIDO, StatusItem.ANALISE_HUMANA]),
+            AuditItem.status.in_(list(STATUS_REVISAVEIS)),
         )
     )
     cfg = await session.get(OrgSettings, a.org_id)
@@ -320,7 +335,7 @@ async def _saida(session: AsyncSession, a: Audit, principal: Principal) -> Audit
         arquivo=arquivo.nome_original if arquivo else None,
         mapeamento=a.mapeamento,
         problemas_resumo=a.problemas_resumo or {},
-        estimativa=a.estimativa or {},
+        estimativa=await run_in_threadpool(estimativa_atual, a),
         tokens=a.tokens or {},
         configuracao=a.configuracao or {},
         erro=a.erro,
@@ -408,7 +423,7 @@ async def listar_auditorias(
                         AuditItem.audit_id.in_(ids),
                         AuditItem.ignorado.is_(False),
                         AuditItem.revisao_status == StatusRevisao.PENDENTE,
-                        AuditItem.status.in_([StatusItem.CONFIRMADO, StatusItem.CORRIGIDO, StatusItem.ANALISE_HUMANA]),
+                        AuditItem.status.in_(list(STATUS_REVISAVEIS)),
                     )
                     .group_by(AuditItem.audit_id)
                 )
@@ -474,19 +489,21 @@ async def iniciar_auditoria(
     a = await _carregar_auditoria(session, principal, audit_id)
     if a.status not in (StatusAuditoria.PRONTA, StatusAuditoria.PAUSADA_ORCAMENTO, StatusAuditoria.FALHOU):
         raise Conflito("Esta auditoria não pode ser iniciada no estado atual.")
+    agentes = await run_in_threadpool(catalogo.agentes_configurados)
+    modelos = {k: v["modelo"] for k, v in agentes.items()}
     try:
-        await run_in_threadpool(cliente)
+        await run_in_threadpool(verificar_chaves, [m for k, m in modelos.items() if k != "abreviacoes"])
     except ChaveAPIAusente as e:
         raise AppError(
             str(e),
-            acao="Peça ao administrador do servidor para configurar ANTHROPIC_API_KEY.",
+            acao="Peça ao superadministrador para cadastrar a chave em Chaves de API ou trocar o modelo.",
             status_code=503,
             codigo="ia_indisponivel",
         ) from e
-    s = get_settings()
     cfg = await session.get(OrgSettings, principal.org_id) or OrgSettings(org_id=principal.org_id)
-    modo = dados.modo or (a.estimativa or {}).get("modo_recomendado") or "tempo_real"
-    estimativa = (a.estimativa or {}).get(modo, {})
+    estimativas = await run_in_threadpool(estimativa_atual, a)
+    modo = dados.modo or estimativas.get("modo_recomendado") or "tempo_real"
+    estimativa = estimativas.get(modo, {})
     previsto = float(estimativa.get("custo_usd_estimado", 0))
     if cfg.orcamento_mensal_usd is not None:
         gasto = await gasto_mes(session, principal.org_id)  # type: ignore[arg-type]
@@ -502,14 +519,13 @@ async def iniciar_auditoria(
     a.status = StatusAuditoria.PROCESSANDO
     a.erro = None
     a.iniciado_em = a.iniciado_em or datetime.now(UTC)
+    a.estimativa = estimativas
+    # Os modelos ficam congelados na auditoria: trocar em "Modelos de IA" não muda uma auditoria em andamento.
     a.configuracao = {
-        "modelo_principal": cfg.modelo_principal or s.llm_model_primary,
-        "modelo_escalonamento": cfg.modelo_escalonamento or s.llm_model_escalation,
-        "esforco_principal": s.llm_effort_primary,
-        "esforco_escalonamento": s.llm_effort_escalation,
-        "limiar_confirmado": float(cfg.limiar_confirmado or 0.9),
-        "limiar_corrigido": float(cfg.limiar_corrigido or 0.85),
+        "modelos": modelos,
+        "esforcos": {k: v["esforco"] for k, v in agentes.items()},
         "limiar_escalonamento": float(cfg.limiar_escalonamento or 0.8),
+        "aprovacao_automatica": cfg.aprovacao_automatica,
         "imposto_seletivo_exige_analise": cfg.imposto_seletivo_exige_analise,
         "custo_estimado_confirmado_usd": dados.confirmar_custo_usd,
         "modo": modo,
@@ -557,48 +573,52 @@ CAMPOS_TABELA = [
     "tipo_codigo",
     "status",
     "motivos",
-    "confianca",
+    "confianca_global",
     "revisao_status",
-    "anexo",
+    "tratamento",
     "cclasstrib_sugerido",
     "cst_sugerido",
     "imposto_seletivo",
     "perguntas",
     "origem",
+    "nivel_revisao",
+    "aprovado_automaticamente",
+    "categoria",
+    "hipotese",
 ]
 
 
 @router.get("/auditorias/{audit_id}/itens", response_model=ItensColunares)
 async def listar_itens(audit_id: uuid.UUID, principal: Ver, session: SessionDep) -> ItensColunares:
     await _carregar_auditoria(session, principal, audit_id)
-    q = (
-        select(
-            AuditItem.id,
-            AuditItem.linha,
-            AuditItem.codigo_interno,
-            AuditItem.descricao,
-            AuditItem.tipo,
-            AuditItem.ncm,
-            AuditItem.nbs,
-            AuditItem.ncm_informado,
-            AuditItem.codigo_sugerido,
-            AuditItem.tipo_codigo_sugerido,
-            AuditItem.status,
-            AuditItem.motivos,
-            AuditItem.confianca,
-            AuditItem.revisao_status,
-            LegalRule.anexo,
-            AuditItem.cclasstrib_sugerido,
-            AuditItem.cst_sugerido,
-            AuditItem.imposto_seletivo,
-            func.jsonb_array_length(AuditItem.perguntas).label("n_perguntas"),
-            AuditItem.origem,
-            AuditItem.final_codigo,
-            AuditItem.final_cclasstrib,
-        )
-        .outerjoin(LegalRule, LegalRule.id == AuditItem.regra_id)
-        .where(AuditItem.audit_id == audit_id, AuditItem.ignorado.is_(False))
-    )
+    q = select(
+        AuditItem.id,
+        AuditItem.linha,
+        AuditItem.codigo_interno,
+        AuditItem.descricao,
+        AuditItem.tipo,
+        AuditItem.ncm,
+        AuditItem.nbs,
+        AuditItem.ncm_informado,
+        AuditItem.codigo_sugerido,
+        AuditItem.tipo_codigo_sugerido,
+        AuditItem.status,
+        AuditItem.motivos,
+        AuditItem.confianca_global,
+        AuditItem.revisao_status,
+        AuditItem.tipo_tratamento,
+        AuditItem.cclasstrib_sugerido,
+        AuditItem.cst_sugerido,
+        AuditItem.is_situacao,
+        func.jsonb_array_length(AuditItem.perguntas).label("n_perguntas"),
+        AuditItem.origem,
+        AuditItem.final_codigo,
+        AuditItem.final_cclasstrib,
+        AuditItem.nivel_revisao,
+        AuditItem.aprovado_automaticamente,
+        AuditItem.categoria,
+        AuditItem.hipotese,
+    ).where(AuditItem.audit_id == audit_id, AuditItem.ignorado.is_(False))
     if principal.somente_leitura:
         q = q.where(AuditItem.revisao_status == StatusRevisao.APROVADO)
     rows = (await session.execute(q.order_by(AuditItem.linha))).all()
@@ -618,14 +638,18 @@ async def listar_itens(audit_id: uuid.UUID, principal: Ver, session: SessionDep)
                 tipo_cod,
                 r.status,
                 r.motivos or [],
-                float(r.confianca) if r.confianca is not None else None,
+                r.confianca_global,
                 r.revisao_status,
-                r.anexo,
+                r.tipo_tratamento,
                 r.final_cclasstrib or r.cclasstrib_sugerido,
                 r.cst_sugerido,
-                r.imposto_seletivo,
+                r.is_situacao,
                 r.n_perguntas or 0,
                 r.origem,
+                r.nivel_revisao,
+                r.aprovado_automaticamente,
+                r.categoria,
+                r.hipotese,
             ]
         )
     return ItensColunares(total=len(linhas), campos=CAMPOS_TABELA, linhas=linhas)

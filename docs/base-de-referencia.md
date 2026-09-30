@@ -75,7 +75,7 @@ status_revisao: pendente_revisao
 Toda regra nasce `pendente_revisao` e é validada contra as tabelas oficiais (CST/cClassTrib existem e
 são compatíveis; códigos existem na NCM/NBS vigente — extintos são sinalizados). Condições descritas em
 palavras (ex.: "sem adição de açúcar") geram um aviso; o superadministrador as estrutura manualmente ou
-com "Sugerir condições com IA" (sugestão também pendente). **Somente regras aprovadas são usadas.**
+com "Sugerir condições com IA" (sugestão também pendente). Regras aprovadas são **precedentes opcionais**: o analista raciocina a partir do texto legal e das tabelas; a regra aprovada aumenta a confiança quando confirma a conclusão e gera conflito (revisão do especialista) quando diverge.
 
 O relatório `GET /api/referencia/validacao` lista regras (inclusive aprovadas) que citam códigos
 inexistentes na tabela vigente.
@@ -117,3 +117,20 @@ exceções também podem ser editadas diretamente. **Regras com divergência alt
 aprovadas individualmente, com justificativa escrita** (registrada na trilha de auditoria), e ficam
 fora da aprovação em lote. As divergências são recalculadas a cada edição e após cada importação de
 tabela.
+
+
+## Atos normativos da reforma (fonte `normas`)
+
+Além da LC 214/2025, o analista consulta os artigos vigentes destes atos, importados do Planalto
+(`make seed-reference` ou **Base normativa → Atos normativos da reforma**; CLI: `python -m app.cli seed-normas`):
+
+| Ato | Endereço |
+|---|---|
+| EC 132/2023 (inclui a transição no ADCT) | planalto.gov.br/ccivil_03/constituicao/emendas/emc/emc132.htm |
+| LC 227/2026 (CGIBS, processo do IBS, alterações da LC 214) | planalto.gov.br/ccivil_03/leis/lcp/lcp227.htm |
+| Decreto 12.955/2026 (regulamento da CBS) | planalto.gov.br/ccivil_03/_ato2023-2026/2026/decreto/D12955.htm |
+
+Cada ato é uma versão própria (várias ficam ativas ao mesmo tempo); o texto riscado é descartado e
+artigos longos são divididos em trechos para a busca por significado. O catálogo fica em
+`backend/app/reference/importers/normas.py`. O calendário da transição (2026 teste, 2027–2028 CBS e
+IBS de 0,1 p.p., 2029–2032 redução de ICMS/ISS, 2033 vigência integral) está em `app/analise/transicao.py`.

@@ -6,12 +6,15 @@ import { toast } from "sonner";
 import { api, ok, tokenValido } from "@/api/client";
 import { useAuth } from "@/auth/auth";
 import { Cabecalho, EstadoErro, mensagemErro, STATUS } from "@/components/dominio";
-import { Aviso, Button, Painel, Progresso, Skeleton } from "@/components/ui/primitives";
+import { Aviso, Button, Painel, Progresso, Skeleton, Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/primitives";
 import { assinarSSE } from "@/lib/sse";
-import { fmtData, fmtNum, fmtUSD } from "@/lib/format";
+import { fmtData, fmtNum, fmtUSD, plural } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { ETAPAS, ROTULO_STATUS_AUDITORIA, useAuditoria, type Auditoria } from "./comum";
 import { Passos } from "./NovaAuditoriaPage";
+import { FamiliasPainel } from "./FamiliasPainel";
+import { FluxoAuditoria } from "./FluxoAgentes";
+import { PerguntasPainel } from "./PerguntasPainel";
 import { Resultado } from "./Resultado";
 
 export function AuditoriaPage() {
@@ -57,7 +60,7 @@ export function AuditoriaPage() {
   );
   const subtitulo = (
     <span>
-      {d.empresa} · referência legal {fmtData(d.data_referencia)} · {ROTULO_STATUS_AUDITORIA[d.status] ?? d.status}
+      {d.empresa} · vigência {fmtData(d.data_referencia)} · {ROTULO_STATUS_AUDITORIA[d.status] ?? d.status}
     </span>
   );
 
@@ -110,8 +113,65 @@ export function AuditoriaPage() {
           {d.erro} Os itens já analisados continuam disponíveis para revisão.
         </Aviso>
       ) : null}
-      <Resultado auditoria={d} />
+      <Abas auditoria={d} />
     </>
+  );
+}
+
+/** Itens, perguntas decisivas e famílias investigadas: o trabalho do analista em três visões. */
+function Abas({ auditoria }: { auditoria: Auditoria }) {
+  const c = auditoria.contadores as { perguntas_abertas?: number; itens_em_perguntas?: number; familias?: number };
+  const [aba, setAba] = useState(() => {
+    try {
+      return sessionStorage.getItem(`aba:${auditoria.id}`) ?? "itens";
+    } catch {
+      return "itens";
+    }
+  });
+  const mudar = (v: string) => {
+    setAba(v);
+    try {
+      sessionStorage.setItem(`aba:${auditoria.id}`, v);
+    } catch {
+      /* armazenamento indisponível */
+    }
+  };
+  return (
+    <Tabs value={aba} onValueChange={mudar}>
+      <TabsList className="mb-4">
+        <TabsTrigger value="itens">Itens</TabsTrigger>
+        <TabsTrigger value="perguntas">
+          Perguntas
+          {c.perguntas_abertas ? (
+            <span className="num ml-1.5 rounded-full bg-ocre px-1.5 text-2xs font-semibold text-white">{fmtNum(c.perguntas_abertas)}</span>
+          ) : null}
+        </TabsTrigger>
+        <TabsTrigger value="familias">
+          Famílias investigadas {c.familias ? <span className="num text-tinta-3">({fmtNum(c.familias)})</span> : null}
+        </TabsTrigger>
+        <TabsTrigger value="fluxo">Fluxo dos agentes</TabsTrigger>
+      </TabsList>
+      <TabsContent value="itens">
+        {c.perguntas_abertas ? (
+          <Aviso tom="atencao" className="mb-4" titulo={`${plural(c.perguntas_abertas, "pergunta destrava", "perguntas destravam")} ${plural(c.itens_em_perguntas ?? 0, "item", "itens")}`}>
+            <button className="underline" onClick={() => mudar("perguntas")}>
+              Responder agora
+            </button>{" "}
+            — cada resposta vale para o grupo inteiro e reclassifica os itens na hora.
+          </Aviso>
+        ) : null}
+        <Resultado auditoria={auditoria} />
+      </TabsContent>
+      <TabsContent value="perguntas">
+        <PerguntasPainel auditId={auditoria.id} />
+      </TabsContent>
+      <TabsContent value="familias">
+        <FamiliasPainel auditId={auditoria.id} />
+      </TabsContent>
+      <TabsContent value="fluxo">
+        <FluxoAuditoria auditId={auditoria.id} />
+      </TabsContent>
+    </Tabs>
   );
 }
 
@@ -178,7 +238,7 @@ function PreviaInicio({ auditoria }: { auditoria: Auditoria }) {
           <Aviso tom="atencao" titulo="Base de referência incompleta">
             {!prob.base_referencia.ncm ? "A tabela NCM oficial ainda não foi importada. " : ""}
             {!prob.base_referencia.nbs ? "A tabela NBS oficial ainda não foi importada. " : ""}
-            Os itens que dependem dela irão para análise humana.
+            Os itens que dependem dela irão para revisão do contador.
           </Aviso>
         ) : null}
         <div className="grid gap-3 sm:grid-cols-4">
@@ -250,15 +310,18 @@ function PreviaInicio({ auditoria }: { auditoria: Auditoria }) {
               className={cn("rounded-md border px-3 py-2 text-left text-sm", modo === m ? "border-tinta bg-superficie-2" : "border-regua hover:border-regua-forte")}
             >
               <span className="font-medium">{m === "lote" ? "Em lote" : "Tempo real"}</span>
-              <span className="block text-2xs text-tinta-3">{m === "lote" ? "50% mais barato, até 24 h" : "Mais rápido"}</span>
+              <span className="block text-2xs text-tinta-3">{m === "lote" ? "50% mais barato nos modelos Claude, até 24 h" : "Mais rápido"}</span>
             </button>
           ))}
         </div>
         <dl className="mt-4 grid gap-2 text-sm">
+          <Economia previsao={(escolhida.previsao ?? {}) as Record<string, number>} />
           <Linha rotulo="Itens analisados por IA" valor={fmtNum(Number(escolhida.itens_com_ia ?? 0))} />
           <Linha rotulo="Segundos pareceres (estimados)" valor={fmtNum(Number(escolhida.escalonamentos_estimados ?? 0))} />
+          <Linha rotulo="Famílias a investigar na lei" valor={fmtNum(Number(escolhida.familias_estimadas ?? 0))} />
           <Linha rotulo="Tokens de entrada / saída" valor={`${fmtNum(Number(escolhida.tokens_entrada_estimados ?? 0))} / ${fmtNum(Number(escolhida.tokens_saida_estimados ?? 0))}`} />
           <Linha rotulo="Tempo" valor={String(escolhida.tempo_texto ?? "")} />
+          <CustoPorAgente agentes={(escolhida.agentes ?? []) as AgenteCusto[]} semLote={(escolhida.sem_lote ?? []) as string[]} />
           <div className="mt-2 border-t border-regua pt-3">
             <dt className="text-xs text-tinta-3">Custo estimado</dt>
             <dd className="num text-2xl font-semibold">{fmtUSD(Number(escolhida.custo_usd_estimado ?? 0))}</dd>
@@ -280,6 +343,34 @@ function PreviaInicio({ auditoria }: { auditoria: Auditoria }) {
           <p className="mt-4 text-xs text-tinta-3">Seu papel não permite iniciar auditorias.</p>
         )}
       </Painel>
+    </div>
+  );
+}
+
+type AgenteCusto = { agente: string; nome: string; modelo_nome: string; chamadas: number; custo_usd: number; lote: boolean };
+
+/** Custo previsto de cada agente, com o modelo escolhido em "Modelos de IA". */
+function CustoPorAgente({ agentes, semLote }: { agentes: AgenteCusto[]; semLote: string[] }) {
+  if (!agentes.length) return null;
+  return (
+    <div className="mt-2 rounded-md border border-regua">
+      <p className="border-b border-regua px-3 py-1.5 text-2xs font-medium text-tinta-3">Custo por agente (modelo atual)</p>
+      <ul className="divide-y divide-regua text-xs">
+        {agentes.map((a) => (
+          <li key={a.agente} className="flex items-baseline gap-2 px-3 py-1.5">
+            <span className="min-w-0 flex-1">
+              <span className="font-medium">{a.nome}</span> <span className="text-tinta-3">· {a.modelo_nome}</span>
+              <span className="block text-2xs text-tinta-3">
+                {fmtNum(a.chamadas)} chamada(s){a.lote ? " · lote −50%" : ""}
+              </span>
+            </span>
+            <span className="num">{fmtUSD(a.custo_usd)}</span>
+          </li>
+        ))}
+      </ul>
+      {semLote.length ? (
+        <p className="border-t border-regua px-3 py-1.5 text-2xs text-ocre">Sem lote (preço cheio, em tempo real): {semLote.join(", ")}.</p>
+      ) : null}
     </div>
   );
 }
@@ -321,7 +412,7 @@ function Acompanhamento({ auditoria }: { auditoria: Auditoria }) {
       </div>
       <Progresso className="mt-3" valor={total ? (concl / total) * 100 : 0} rotulo="Progresso da auditoria" />
       <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-xs">
-        {(["confirmado", "corrigido", "analise_humana", "erro"] as const).map((s) => (
+        {(["classificado", "aguardando_informacao", "revisao_contador", "revisao_especialista", "erro"] as const).map((s) => (
           <span key={s} className={cn("flex items-center gap-1.5", STATUS[s].cor)}>
             {(() => {
               const I = STATUS[s].icone;
@@ -337,5 +428,27 @@ function Acompanhamento({ auditoria }: { auditoria: Auditoria }) {
         ))}
       </div>
     </Painel>
+  );
+}
+
+/** De onde vem a economia: o que o analista resolve sem chamar a IA. */
+function Economia({ previsao }: { previsao: Record<string, number> }) {
+  if (!previsao.itens) return null;
+  const linhas: [string, number][] = [
+    ["NCM informado confirmado sem IA (estimado)", previsao.confirmaveis_sem_ia ?? 0],
+    ["Linhas repetidas (uma análise vale para todas)", previsao.repetidos ?? 0],
+    ["Já aprovados antes (memória da empresa)", previsao.na_memoria ?? 0],
+    ["Famílias já investigadas (reaproveitadas)", previsao.familias_reaproveitadas ?? 0],
+  ];
+  return (
+    <div className="rounded-md border border-conferido/30 bg-conferido-suave/40 px-3 py-2">
+      <p className="text-2xs font-medium text-conferido">Economia do analista</p>
+      {linhas.map(([r, n]) => (
+        <div key={r} className="flex justify-between gap-4 text-2xs">
+          <span className="text-tinta-2">{r}</span>
+          <span className="num">{fmtNum(n)}</span>
+        </div>
+      ))}
+    </div>
   );
 }

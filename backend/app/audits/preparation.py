@@ -113,16 +113,18 @@ def preparar_auditoria(audit_id: uuid.UUID, org_id: uuid.UUID) -> None:
         cfg = sess.get(OrgSettings, org_id) or OrgSettings(org_id=org_id)
         s = get_settings()
         validos = resumo["itens_validos"]
-        com_ia = max(0, validos - na_memoria)
         limite_lote = cfg.lote_min_itens or s.llm_batch_min_itens
-        modelo_p = cfg.modelo_principal or s.llm_model_primary
-        modelo_e = cfg.modelo_escalonamento or s.llm_model_escalation
         taxa = estimate.taxa_escalonamento_historica(sess, org_id)
-        audit.estimativa = {
-            "tempo_real": estimate.estimar(com_ia, modelo_p, modelo_e, taxa, lote=False),
-            "lote": estimate.estimar(com_ia, modelo_p, modelo_e, taxa, lote=True),
-            "modo_recomendado": "lote" if com_ia >= limite_lote else "tempo_real",
-        }
+        previsao = estimate.prever_trabalho(
+            [i for i in itens if not i.ignorado],
+            codigos_validos={
+                c for c, info in {**ncm_info, **nbs_info}.items() if info.get("existe") and info.get("vigente")
+            },
+            na_memoria=na_memoria,
+            familias_ja_investigadas=estimate.familias_ja_investigadas(sess, data_ref),
+        )
+        resumo["previsao_ia"] = previsao
+        audit.estimativa = estimate.estimativas(previsao, taxa, limite_lote)
         audit.problemas_resumo = resumo
         audit.total_itens = validos
         audit.status = StatusAuditoria.PRONTA
