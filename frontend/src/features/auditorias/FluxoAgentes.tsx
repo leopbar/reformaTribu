@@ -297,8 +297,9 @@ export function CaminhoItem({ itemId }: { itemId: string }) {
               className="size-2 animate-ping rounded-full bg-caneta"
               aria-hidden
             />{" "}
-            Ao vivo: o item está com{" "}
-            {AGENTES[c.caixa_atual ?? ""]?.nome ?? "o próximo agente"}
+            {c.status === "pendente"
+              ? "Na fila: aguardando um agente livre para começar"
+              : `Ao vivo: o item está com ${AGENTES[c.caixa_atual ?? ""]?.nome ?? "o próximo agente"}`}
           </span>
         ) : (
           <span>
