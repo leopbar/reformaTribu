@@ -35,3 +35,16 @@ especialista.
 revisão humana se concentra no que tem dúvida real. A métrica principal da avaliação passa a ser
 "falsos classificados". Os prompts de investigação (`prompts/investigar_enquadramento`) e de fatos
 (`prompts/extrair_fatos`) devem ser avaliados com o conjunto-ouro validado antes de mudanças.
+
+**Evolução (2026-09-29 e 2026-09-30).** Decisões que detalham ou revisam partes desta ADR:
+[0014](0014-varias-plataformas-de-ia.md) (modelos por agente),
+[0015](0015-tese-reaproveitada-pelo-conteudo.md) (chave da tese pelo conteúdo),
+[0016](0016-caminho-e-fluxo-dos-agentes.md) (caminho e fluxo dos agentes),
+[0017](0017-navegador-da-ncm.md) (Navegador da NCM),
+[0018](0018-conflito-so-quando-muda-o-resultado.md) (conflito só quando muda o resultado),
+[0019](0019-duvida-que-nao-muda-o-imposto.md) (dúvida imaterial),
+[0020](0020-checagem-cruzada-com-os-anexos.md) (anexos da lei),
+[0021](0021-revisao-humana-e-reanalise.md) (revisão e reanálise),
+[0022](0022-economia-de-ia-e-estimativa.md) (economia),
+[0023](0023-robustez-das-chamadas-de-ia.md) (robustez) e
+[0024](0024-execucao-paralela-e-recuperacao.md) (execução paralela).

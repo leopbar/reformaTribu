@@ -35,3 +35,7 @@ no servidor.
 principalmente no Jurista. A recomendação é testar numa planilha pequena e comparar na aba "Caminho
 pelos agentes". Os preços do catálogo precisam ser mantidos pelo superadministrador quando as
 plataformas mudarem a tabela.
+
+**Atualizações.** Agente "Navegador da NCM" acrescentado ao catálogo (ADR 0017). Reanálise de auditoria
+concluída passa a usar os modelos escolhidos hoje (ADR 0021). Modo estrito na OpenAI e mensagens de falha
+de plataforma (ADR 0023). Tempos medidos por modelo e impacto no prazo (ADR 0024).
