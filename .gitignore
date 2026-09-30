@@ -21,3 +21,6 @@ evals/reports/*
 playwright-report/
 test-results/
 credenciais-dev.local.txt
+
+# Documentos só locais (acompanhamento do projeto)
+*.local.md
