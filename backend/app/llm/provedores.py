@@ -96,12 +96,28 @@ def _corpo_compativel(req: RequisicaoLLM, provedor: str) -> dict[str, Any]:
         "messages": [{"role": "system", "content": req.prompt.texto}, {"role": "user", "content": _conteudo(req)}],
         "response_format": {
             "type": "json_schema",
-            "json_schema": {"name": req.no[:64], "schema": req.schema, "strict": False},
+            # Estrito quando o esquema permite (modelos pequenos às vezes devolvem o próprio esquema sem isso).
+            "json_schema": {"name": req.no[:64], "schema": req.schema, "strict": esquema_estrito(req.schema)},
         },
     }
     if catalogo.suporta_esforco(req.modelo):
         corpo["reasoning_effort"] = req.esforco if req.esforco in ("low", "medium", "high") else "medium"
     return corpo
+
+
+def esquema_estrito(schema: Any) -> bool:
+    """O modo estrito da OpenAI exige objetos fechados com todos os campos obrigatórios."""
+    if isinstance(schema, list):
+        return all(esquema_estrito(x) for x in schema)
+    if not isinstance(schema, dict):
+        return True
+    if schema.get("type") == "object" or "properties" in schema:
+        props = schema.get("properties") or {}
+        if schema.get("additionalProperties") is not False or set(schema.get("required") or []) != set(props):
+            return False
+        if not all(esquema_estrito(v) for v in props.values()):
+            return False
+    return all(esquema_estrito(schema[chave]) for chave in ("items", "anyOf") if chave in schema)
 
 
 def _chamar_compativel(req: RequisicaoLLM, provedor: str) -> dict[str, Any]:

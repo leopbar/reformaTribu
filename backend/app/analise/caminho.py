@@ -500,6 +500,8 @@ def _navegador(r: Registro) -> Passo:
         if caminho:
             d.insert(0, {"rotulo": "Caminho na árvore", "valor": caminho})
         return Passo("navegador", "feito", resumo, d)
+    if a.get("erro"):
+        return Passo("navegador", "falhou", f"A busca guiada não pôde ser feita: {a['erro']}", d)
     return Passo("navegador", "falhou", "Desceu pela tabela oficial, mas nenhuma opção descreve o item.", d)
 
 

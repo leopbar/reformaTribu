@@ -76,3 +76,12 @@ def test_recomendacoes_apontam_para_modelos_do_catalogo() -> None:
         assert agente in catalogo.AGENTES
         assert ranking and all(m in conhecidos for m, _ in ranking)
         assert catalogo.AGENTES[agente]["padrao"] in conhecidos
+
+
+def test_esquemas_fechados_usam_modo_estrito_na_openai() -> None:
+    from app.llm.schemas import SCHEMA_FATOS_ITEM, SCHEMA_NAVEGACAO
+
+    assert provedores.esquema_estrito(SCHEMA_FATOS_ITEM)
+    assert provedores.esquema_estrito(SCHEMA_NAVEGACAO)
+    aberto = {"type": "object", "properties": {"a": {"type": "string"}}, "required": []}
+    assert not provedores.esquema_estrito(aberto)

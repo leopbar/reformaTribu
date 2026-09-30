@@ -361,7 +361,7 @@ def concluir(state: ItemState, runtime: Rt) -> dict[str, Any]:
             "busca": state.busca,
             "gatilhos_escalonamento": state.gatilhos_escalonamento,
         }
-        item.erro = state.falha_ia or state.tese_falha
+        item.erro = state.falha_ia or state.tese_falha or (state.arvore or {}).get("erro")
         tese = s.get(TaxThesis, uuid.UUID(state.tese_id)) if state.tese_id else None
         entrada = aplicacao.entrada(
             s, item, audit, tese, tese_falha=state.tese_falha, base_incompleta=state.base_incompleta

@@ -94,6 +94,7 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
     prompt = carregar("navegar_arvore", ctx.prompts.get("navegar_arvore"))
     caminho: list[dict[str, str]] = []
     passos: list[dict[str, Any]] = []
+    falhas: list[str] = []
 
     def perguntar(nivel: str, opcoes: list[dict[str, Any]]) -> NavegacaoArvore | None:
         conteudo = {
@@ -129,6 +130,7 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
             raise
         except gateway.FalhaIA as e:
             log.warning("navegacao_falhou", item=state.item_id, nivel=nivel, erro=str(e))
+            falhas.append(str(e))
             return None
         r = NavegacaoArvore.model_validate(res.dados)
         validos = {o["codigo"] for o in opcoes}
@@ -195,6 +197,8 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
         "justificativa": passos[-1]["justificativa"] if passos else "",
         "caminho": caminho,
         "passos": passos,
+        "erro": falhas[-1] if falhas and not codigo else None,
+        "modelo": ctx.modelo_navegador,
         "alternativas": [
             {
                 "codigo": a["codigo"],
