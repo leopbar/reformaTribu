@@ -44,6 +44,9 @@ Pontos de confusão relatados pelo usuário na revisão:
   pelo conteúdo (mesma prova, mesmo modelo, mesmas instruções → mesma resposta guardada). Para obter um
   resultado diferente, algo precisa mudar: modelo, instruções ou dados do item.
 
+O acompanhamento da reanálise na tela (faixa, ações bloqueadas, atualização sem F5) está na
+[ADR 0025](0025-reanalise-acompanhada-ao-vivo.md).
+
 ## Consequências
 
 - A lista reflete o estado real de cada item (resolvido ou pendente) sem apagar o histórico da análise.

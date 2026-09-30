@@ -74,11 +74,18 @@ export const TRATAMENTO: Record<string, string> = {
 
 export type DossieDecisao = Schemas["DossieDecisao"];
 
+/** Item ainda passando pelos agentes (na fila ou em processamento). */
+export function emAndamento(status: string | null | undefined): boolean {
+  return status === "pendente" || status === "processando";
+}
+
 export function useDossieItem(id: string | null) {
   return useQuery({
     queryKey: ["dossie-item", id],
     queryFn: () => ok(api.GET("/api/itens/{item_id}/dossie", { params: { path: { item_id: id! } } })),
     enabled: !!id,
+    // Durante a (re)análise, consulta de novo até o item chegar a um status final.
+    refetchInterval: (q) => (emAndamento((q.state.data?.item as { status?: string } | undefined)?.status) ? 2500 : false),
   });
 }
 
@@ -98,6 +105,8 @@ export function useItens(auditId: string) {
       return d.linhas.map((l) => Object.fromEntries(campos.map((c, i) => [c, l[i]])) as unknown as LinhaItem);
     },
     staleTime: 10_000,
+    // Enquanto houver item na fila ou em processamento, a lista se atualiza sozinha.
+    refetchInterval: (q) => (q.state.data?.some((i) => emAndamento(i.status)) ? 4000 : false),
   });
 }
 

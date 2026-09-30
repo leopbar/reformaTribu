@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BookOpenText, Check, ChevronDown, CircleHelp, FileSearch, History, Lightbulb, ListChecks, Pencil, RotateCcw, Scale, ShieldCheck, Undo2, X } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { BookOpenText, Check, ChevronDown, CircleHelp, FileSearch, History, Lightbulb, ListChecks, Loader2, Pencil, RotateCcw, Scale, ShieldCheck, Undo2, X } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { api, ok } from "@/api/client";
 import { useAuth } from "@/auth/auth";
@@ -9,7 +9,7 @@ import { ReguaConferencia, type CodigoInfo } from "@/components/ReguaConferencia
 import { Aviso, Button, Dialog, DialogContent, Input, Kbd, Skeleton, Tabs, TabsContent, TabsList, TabsTrigger, Textarea } from "@/components/ui/primitives";
 import { fmtData, fmtDataHora, fmtUSD } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { TRATAMENTO, useDossieItem, useItemDetalhe } from "./comum";
+import { emAndamento, TRATAMENTO, useDossieItem, useItemDetalhe, type LinhaItem } from "./comum";
 import { DetalheTese } from "./FamiliasPainel";
 import { CaminhoItem } from "./FluxoAgentes";
 import { useResponder } from "./PerguntasPainel";
@@ -34,12 +34,21 @@ export function useAcoesItem(itemId: string | null, auditId: string, aoConcluir?
   const atualizar = () => {
     void qc.invalidateQueries({ queryKey: ["item", itemId] });
     void qc.invalidateQueries({ queryKey: ["dossie-item", itemId] });
+    void qc.invalidateQueries({ queryKey: ["caminho", itemId] });
     void qc.invalidateQueries({ queryKey: ["itens", auditId] });
     void qc.invalidateQueries({ queryKey: ["auditoria", auditId] });
     void qc.invalidateQueries({ queryKey: ["pendencias", auditId] });
   };
+  // Aplica já o status devolvido pela API (ex.: "Na fila" ao reanalisar), sem esperar as consultas.
+  const aplicarStatus = (r: { status?: string; revisao_status?: string }) => {
+    if (!r?.status) return;
+    const novo = { status: r.status, ...(r.revisao_status ? { revisao_status: r.revisao_status } : {}) };
+    qc.setQueryData(["dossie-item", itemId], (d: { item: object } | undefined) => (d ? { ...d, item: { ...d.item, ...novo } } : d));
+    qc.setQueryData(["itens", auditId], (l: LinhaItem[] | undefined) => l?.map((i) => (i.id === itemId ? { ...i, ...novo } : i)));
+  };
   const opcoes = (acao: string, msg: string) => ({
-    onSuccess: (r: { mensagem?: string }) => {
+    onSuccess: (r: { mensagem?: string; status?: string; revisao_status?: string }) => {
+      aplicarStatus(r);
       atualizar();
       toast.success(r?.mensagem ?? msg, acao === "aprovar" ? { action: { label: "Desfazer", onClick: () => desfazer.mutate() } } : undefined);
       aoConcluir?.(acao);
@@ -69,9 +78,23 @@ export function useAcoesItem(itemId: string | null, auditId: string, aoConcluir?
   });
   const reprocessar = useMutation({
     mutationFn: () => ok(api.POST("/api/itens/{item_id}/reprocessar", { params: { path: { item_id: itemId! } } })),
-    ...opcoes("reprocessar", "Reprocessamento iniciado"),
+    ...opcoes("reprocessar", "Reanálise iniciada"),
   });
-  return { aprovar, rejeitar, desfazer, editar, reprocessar };
+  return { aprovar, rejeitar, desfazer, editar, reprocessar, atualizar };
+}
+
+/** Ao terminar a (re)análise do item, atualiza o resto da tela e avisa. */
+function useFimAnalise(itemId: string, processando: boolean, status: string, atualizar: () => void) {
+  // Guarda o item junto: na fila de revisão o mesmo componente passa de um item para outro.
+  const antes = useRef({ itemId, processando });
+  useEffect(() => {
+    if (antes.current.itemId === itemId && antes.current.processando && !processando && status) {
+      atualizar();
+      if (status === "erro") toast.error("A reanálise terminou com erro. Veja o detalhe no item.");
+      else toast.success("Reanálise concluída: o resultado foi atualizado.");
+    }
+    antes.current = { itemId, processando };
+  }, [itemId, processando, status, atualizar]);
 }
 
 type Pergunta = {
@@ -122,6 +145,10 @@ export function DetalheItem({
       /* armazenamento indisponível */
     }
   };
+
+  const statusItem = String((q.data?.item as { status?: string } | undefined)?.status ?? "");
+  const processando = emAndamento(statusItem);
+  useFimAnalise(itemId, processando, statusItem, acoes.atualizar);
 
   if (q.isError) return <EstadoErro erro={q.error} aoTentar={() => void q.refetch()} />;
   if (!q.data) return <Skeleton className="h-[32rem]" />;
@@ -176,6 +203,7 @@ export function DetalheItem({
   const aprovadoHumano = it.revisao_status === "aprovado" && !it.aprovado_automaticamente;
   const completa = !!(res.cclasstrib && !perguntas.length);
   const textos = ident.data?.textos_motivos;
+  const bloqueado = processando || acoes.reprocessar.isPending;
 
   return (
     <div className="flex flex-col gap-5">
@@ -199,7 +227,24 @@ export function DetalheItem({
         </p>
       </div>
 
-      {it.revisao_status === "pendente" && it.status !== "classificado" ? (
+      {processando ? (
+        <div role="status" aria-live="polite" className="flex items-start gap-3 rounded-lg border border-caneta/40 bg-caneta-suave px-4 py-3">
+          <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-caneta" aria-hidden />
+          <div className="flex-1 text-sm">
+            <p className="font-semibold text-caneta">{it.status === "pendente" ? "Reanálise na fila…" : "Reanalisando o item…"}</p>
+            <p className="text-xs text-tinta-2">
+              O item está passando de novo pelos agentes. O que aparece abaixo é da análise anterior e será atualizado sozinho ao terminar. As ações ficam bloqueadas até lá.
+            </p>
+          </div>
+          {vista !== "caminho" ? (
+            <Button tamanho="sm" variant="secundario" onClick={() => mudarVista("caminho")}>
+              Acompanhar
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {!processando && it.revisao_status === "pendente" && it.status !== "classificado" ? (
         <PorQueVeio dimensoes={d.dimensoes as { chave: string; rotulo: string; situacao: string; texto: string }[]} perguntas={perguntas.length} status={it.status} />
       ) : null}
 
@@ -211,7 +256,7 @@ export function DetalheItem({
         <TabsContent value="caminho" className="mt-4">
           <CaminhoItem itemId={itemId} />
         </TabsContent>
-        <TabsContent value="decisao" className="mt-4 flex flex-col gap-5">
+        <TabsContent value="decisao" aria-busy={processando} className={cn("mt-4 flex flex-col gap-5 transition-opacity", processando && "opacity-55")}>
       {/* Resultado */}
       <section className="rounded-lg border border-regua bg-superficie-2 p-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -250,7 +295,7 @@ export function DetalheItem({
                 {pode("responder") && !aprovadoHumano ? (
                   <span className="mt-1.5 flex flex-wrap gap-1 pl-5.5">
                     {p.opcoes.map((o) => (
-                      <Button key={o.valor} tamanho="sm" disabled={responder.isPending} onClick={() => responder.mutate({ id: p.pendencia_id, respostas_itens: { [itemId]: o.valor } })}>
+                      <Button key={o.valor} tamanho="sm" disabled={bloqueado || responder.isPending} onClick={() => responder.mutate({ id: p.pendencia_id, respostas_itens: { [itemId]: o.valor } })}>
                         {o.rotulo ?? o.valor} <span className="text-tinta-3">(só este item)</span>
                       </Button>
                     ))}
@@ -293,7 +338,7 @@ export function DetalheItem({
                       {a.motivo ? <span className="block text-2xs text-tinta-3">{a.motivo}</span> : null}
                     </span>
                     {podeRevisar && !aprovadoHumano ? (
-                      <Button tamanho="sm" variant="secundario" disabled={acoes.editar.isPending} onClick={() => acoes.editar.mutate({ tipo_codigo: idt.arvore!.tipo_codigo, codigo: a.codigo })}>
+                      <Button tamanho="sm" variant="secundario" disabled={bloqueado || acoes.editar.isPending} onClick={() => acoes.editar.mutate({ tipo_codigo: idt.arvore!.tipo_codigo, codigo: a.codigo })}>
                         Usar este
                       </Button>
                     ) : null}
@@ -347,7 +392,7 @@ export function DetalheItem({
                 <span className="codigo w-24 shrink-0">{String(c.formatado)}</span>
                 <span className="flex-1 text-xs text-tinta-2">{String(c.descricao_completa)}</span>
                 {podeRevisar && !aprovadoHumano && c.codigo !== (ident.data.codigo_sugerido as { codigo?: string } | null)?.codigo ? (
-                  <Button tamanho="sm" variant="fantasma" onClick={() => acoes.editar.mutate({ tipo_codigo: String(c.tipo), codigo: String(c.codigo) })}>
+                  <Button tamanho="sm" variant="fantasma" disabled={bloqueado || acoes.editar.isPending} onClick={() => acoes.editar.mutate({ tipo_codigo: String(c.tipo), codigo: String(c.codigo) })}>
                     Usar
                   </Button>
                 ) : null}
@@ -411,23 +456,28 @@ export function DetalheItem({
               ) : (
                 <span className="mr-auto text-sm text-perigo">Rejeitado</span>
               )}
-              <Button variant="secundario" onClick={() => acoes.desfazer.mutate()} disabled={acoes.desfazer.isPending}>
+              <Button variant="secundario" onClick={() => acoes.desfazer.mutate()} disabled={bloqueado || acoes.desfazer.isPending}>
                 <Undo2 /> Desfazer <Kbd>U</Kbd>
               </Button>
             </>
           ) : (
             <>
-              <Button variant="confirmar" onClick={() => acoes.aprovar.mutate(undefined)} disabled={!completa || acoes.aprovar.isPending} title={!completa ? "Responda às perguntas ou corrija o código antes de aprovar" : undefined}>
+              <Button
+                variant="confirmar"
+                onClick={() => acoes.aprovar.mutate(undefined)}
+                disabled={bloqueado || !completa || acoes.aprovar.isPending}
+                title={bloqueado ? "Aguarde o fim da reanálise" : !completa ? "Responda às perguntas ou corrija o código antes de aprovar" : undefined}
+              >
                 <Check /> {it.aprovado_automaticamente ? "Confirmar" : "Aprovar"} <Kbd className="border-white/30 bg-white/10 text-white">A</Kbd>
               </Button>
-              <Button variant="secundario" onClick={() => setEditando(true)}>
+              <Button variant="secundario" onClick={() => setEditando(true)} disabled={bloqueado}>
                 <Pencil /> Corrigir <Kbd>E</Kbd>
               </Button>
-              <Button variant="fantasma" onClick={() => setRejeitando(true)}>
+              <Button variant="fantasma" onClick={() => setRejeitando(true)} disabled={bloqueado}>
                 <X /> Rejeitar <Kbd>R</Kbd>
               </Button>
-              <Button variant="fantasma" className="ml-auto" onClick={() => acoes.reprocessar.mutate()} disabled={acoes.reprocessar.isPending}>
-                <RotateCcw /> Reanalisar
+              <Button variant="fantasma" className="ml-auto" onClick={() => acoes.reprocessar.mutate()} disabled={bloqueado}>
+                {bloqueado ? <Loader2 className="animate-spin" /> : <RotateCcw />} {bloqueado ? "Reanalisando…" : "Reanalisar"}
               </Button>
             </>
           )}
@@ -456,7 +506,7 @@ export function DetalheItem({
         ) : null}
       </Dialog>
       <AtalhosDetalhe
-        ativo={podeRevisar && !editando && !rejeitando && !teseAberta}
+        ativo={podeRevisar && !bloqueado && !editando && !rejeitando && !teseAberta}
         aprovar={() => completa && !aprovadoHumano && acoes.aprovar.mutate(undefined)}
         editar={() => !aprovadoHumano && setEditando(true)}
         rejeitar={() => !aprovadoHumano && setRejeitando(true)}

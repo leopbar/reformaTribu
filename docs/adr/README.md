@@ -36,6 +36,7 @@ Uma decisão revista não é apagada: a ADR antiga recebe um aviso apontando par
 | [0022](0022-economia-de-ia-e-estimativa.md) | Economia de IA e estimativa de custo calibrada | aceito |
 | [0023](0023-robustez-das-chamadas-de-ia.md) | Robustez das chamadas de IA entre plataformas | aceito |
 | [0024](0024-execucao-paralela-e-recuperacao.md) | Execução em pacotes, paralelismo e recuperação de itens travados | aceito, melhorias pendentes |
+| [0025](0025-reanalise-acompanhada-ao-vivo.md) | Reanálise acompanhada ao vivo: faixa, ações bloqueadas, lista e caminho sem F5 | aceito |
 
 ## Mapa rápido: os agentes e as ADRs
 
