@@ -112,6 +112,8 @@ def consolidar(
             motivo = "a sugestão da IA foi descartada: " + str(julgamento["_descartado"])
         return {
             **base,
+            # A busca guiada também não achou código: o caminho dela fica registrado para a revisão.
+            **({"arvore": arvore} if arvore else {}),
             "situacao": "indefinido",
             "tipo_codigo": None,
             "codigo": None,
@@ -134,6 +136,9 @@ def consolidar(
     if anterior and parecer.get("ncm_atual_coerente") is False:
         base["problemas_cadastro"] = sorted({*base["problemas_cadastro"], "NCM_INCOERENTE_COM_DESCRICAO"})
     desc = next((c["descricao_completa"] for c in candidatos if c["codigo"] == codigo_final), None)
+    pela_lei = next((c.get("citado_na_lei") for c in candidatos if c["codigo"] == codigo_final), None)
+    if pela_lei and situacao == "confirmado":
+        pela_lei = None  # a lei cita o próprio código do cadastro: nada foi trocado
     conf = float(parecer.get("confianca", 0) or 0)
     if escalonado and escalonamento_valido and julgamento_valido:
         conf = 0.4 * float((julgamento or {}).get("confianca", 0) or 0) + 0.6 * conf
@@ -150,4 +155,13 @@ def consolidar(
         "segundo_parecer": escalonado,
         "entendimento": parecer.get("justificativa"),
         "sinais_de_duvida": parecer.get("sinais_de_duvida", []),
+        **({"corrigido_pela_lei": pela_lei} if pela_lei else {}),
+        # Códigos que a dúvida poderia justificar (só os oficiais da prova): a avaliação confere se o imposto muda.
+        "codigos_alternativos": [
+            c
+            for c in dict.fromkeys(
+                [*(parecer.get("codigos_alternativos") or []), *((julgamento or {}).get("codigos_alternativos") or [])]
+            )
+            if c != codigo_final and any(x["codigo"] == c for x in candidatos)
+        ],
     }

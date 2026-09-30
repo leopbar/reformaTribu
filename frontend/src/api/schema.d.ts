@@ -621,6 +621,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auditorias/{audit_id}/reprocessar-lote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reprocessar Lote
+         * @description Reanalisa vários itens de uma vez (os da lista filtrada), com os modelos escolhidos hoje.
+         *
+         *     Itens decididos por uma pessoa (aprovados ou rejeitados) e itens ainda em processamento ficam de fora.
+         */
+        post: operations["reprocessar_lote_api_auditorias__audit_id__reprocessar_lote_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auditorias/{audit_id}/aprovar-lote": {
         parameters: {
             query?: never;
@@ -3107,6 +3129,31 @@ export interface components {
             /** Linha Cabecalho */
             linha_cabecalho?: number | null;
         };
+        /** ReprocessarLoteIn */
+        ReprocessarLoteIn: {
+            /** Item Ids */
+            item_ids: string[];
+            /**
+             * Confirmar
+             * @default false
+             */
+            confirmar: boolean;
+        };
+        /** ReprocessarLoteOut */
+        ReprocessarLoteOut: {
+            /** Reprocessaveis */
+            reprocessaveis: number;
+            /** Mantidos Aprovados */
+            mantidos_aprovados: number;
+            /** Em Andamento */
+            em_andamento: number;
+            /** Custo Estimado Usd */
+            custo_estimado_usd: number;
+            /** Enviado */
+            enviado: boolean;
+            /** Mensagem */
+            mensagem: string;
+        };
         /** RespostaIn */
         RespostaIn: {
             /**
@@ -4707,6 +4754,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DecisaoOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reprocessar_lote_api_auditorias__audit_id__reprocessar_lote_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                audit_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReprocessarLoteIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReprocessarLoteOut"];
                 };
             };
             /** @description Validation Error */

@@ -302,6 +302,42 @@ def recuperar_candidatos(state: ItemState, runtime: Rt) -> dict[str, Any]:
                                 "codigo_atual": False,
                             }
                         )
+        # A lei nomeia este produto com outro código (ex.: "Água sanitária … 3808.94.19"): esse código
+        # entra na prova, com a nota, para o Identificador poder corrigir o NCM do cadastro.
+        if atual.get("tipo", "ncm") == "ncm" and state.tipo != "servico" and ctx.versao("ncm") is not None:
+            from sqlalchemy import text as sql
+
+            from app.analise.anexos import codigos_da_lei_para_a_prova
+
+            for citado in codigos_da_lei_para_a_prova(
+                ctx.versoes.get("lc214"), state.descricao_normalizada, atual.get("provavel") or atual.get("codigo")
+            ):
+                nota = f"LC 214/2025, Anexo {citado['anexo']}, item {citado['item']} (“{citado['produto']}”)"
+                for pref in citado["codigos"]:
+                    for r in s.execute(
+                        sql(
+                            "SELECT codigo, descricao_completa FROM ncm_nodes WHERE version_id = :v AND folha "
+                            "AND codigo LIKE :p ORDER BY codigo LIMIT 6"
+                        ),
+                        {"v": ctx.versao("ncm"), "p": pref.replace(".", "") + "%"},
+                    ):
+                        existente = next((c for c in lista if c["codigo"] == r.codigo), None)
+                        if existente is not None:
+                            existente["citado_na_lei"] = nota
+                            continue
+                        lista.append(
+                            {
+                                "tipo_codigo": "ncm",
+                                "codigo": r.codigo,
+                                "descricao_completa": r.descricao_completa,
+                                "rank_semantico": None,
+                                "rank_textual": None,
+                                "score": 0.0,
+                                "posicao": None,
+                                "codigo_atual": False,
+                                "citado_na_lei": nota,
+                            }
+                        )
     for c in lista:
         c.setdefault("codigo_atual", c["codigo"] in (atual.get("codigo"), atual.get("provavel")))
     info["semantica"] = embedding is not None
@@ -323,6 +359,8 @@ def _confirmacao_sem_ia(state: ItemState, atual: dict[str, Any], lista: list[dic
         return None
     if (state.estrutura or {}).get("descricao_curta"):
         return None
+    if any(x.get("citado_na_lei") for x in lista):
+        return None  # a lei aponta outro código para este produto: a IA precisa comparar
     c = next((x for x in lista if x["codigo"] == cod), None)
     if c is None or not c.get("posicao"):
         return None
@@ -385,6 +423,7 @@ def _conteudo(state: ItemState, ctx: Contexto) -> dict[str, Any]:
                 "tipo": c["tipo_codigo"],
                 "codigo_formatado": formatar_codigo(c["tipo_codigo"], c["codigo"]),
                 "descricao_oficial": c["descricao_completa"],
+                **({"citado_na_lei": c["citado_na_lei"]} if c.get("citado_na_lei") else {}),
             }
             for c in state.candidatos
         ],

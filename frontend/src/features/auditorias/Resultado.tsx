@@ -8,14 +8,14 @@ import {
   type SortingState,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDownUp, CheckCheck, Search, Stamp } from "lucide-react";
+import { ArrowDownUp, CheckCheck, RotateCcw, Search, Stamp } from "lucide-react";
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, ok } from "@/api/client";
 import { useAuth } from "@/auth/auth";
 import { CONFIANCA, ConfiancaGlobal, EstadoErro, EstadoVazio, mensagemErro, SeloStatus, STATUS } from "@/components/dominio";
 import { Aviso, Button, Dialog, DialogContent, Input, Painel, Select, Skeleton } from "@/components/ui/primitives";
-import { fmtCodigo, fmtNum, fmtPct } from "@/lib/format";
+import { fmtCodigo, fmtNum, fmtPct, fmtUSD } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { TRATAMENTO, useItens, type Auditoria, type LinhaItem } from "./comum";
 import { DetalheItem } from "./DetalheItem";
@@ -87,6 +87,7 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
   const [aberto, setAberto] = useState<string | null>(null);
   const [cursor, setCursor] = useState(0);
   const [lote, setLote] = useState(false);
+  const [reanalise, setReanalise] = useState(false);
   const textos = auditoria.textos_motivos;
 
   const dados = useMemo(() => filtrarItens(itens.data ?? [], fAdiado), [itens.data, fAdiado]);
@@ -324,9 +325,14 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
         ) : null}
         <span className="num ml-auto text-xs text-tinta-3">{fmtNum(dados.length)} de {fmtNum(todos.length)} itens</span>
         {pode("revisar") ? (
-          <Button variant="secundario" onClick={() => setLote(true)}>
-            <CheckCheck /> Aprovar em lote
-          </Button>
+          <>
+            <Button variant="secundario" onClick={() => setReanalise(true)} disabled={!dados.length}>
+              <RotateCcw /> Reanalisar em lote
+            </Button>
+            <Button variant="secundario" onClick={() => setLote(true)}>
+              <CheckCheck /> Aprovar em lote
+            </Button>
+          </>
         ) : null}
       </div>
 
@@ -390,7 +396,62 @@ export function Resultado({ auditoria }: { auditoria: Auditoria }) {
         ) : null}
       </Dialog>
       <AprovacaoLote aberto={lote} aoFechar={() => setLote(false)} auditId={auditoria.id} />
+      {reanalise ? <ReanaliseLote auditId={auditoria.id} itemIds={dados.map((i) => i.id)} filtrado={dados.length !== todos.length} aoFechar={() => setReanalise(false)} /> : null}
     </div>
+  );
+}
+
+/** Reanalisa de uma vez os itens da lista filtrada (com os modelos escolhidos hoje). */
+function ReanaliseLote({ auditId, itemIds, filtrado, aoFechar }: { auditId: string; itemIds: string[]; filtrado: boolean; aoFechar: () => void }) {
+  const qc = useQueryClient();
+  const chamar = (confirmar: boolean) =>
+    ok(api.POST("/api/auditorias/{audit_id}/reprocessar-lote", { params: { path: { audit_id: auditId } }, body: { item_ids: itemIds, confirmar } }));
+  const previa = useMutation({ mutationFn: () => chamar(false) });
+  const enviar = useMutation({
+    mutationFn: () => chamar(true),
+    onSuccess: (r) => {
+      toast.success(r.mensagem);
+      for (const k of [["itens", auditId], ["auditoria", auditId], ["fluxo", auditId]]) void qc.invalidateQueries({ queryKey: k });
+      aoFechar();
+    },
+    onError: (e) => toast.error(mensagemErro(e)),
+  });
+  const { mutate } = previa;
+  useEffect(() => mutate(), [mutate]);
+  const p = previa.data;
+  return (
+    <Dialog open onOpenChange={(o) => !o && aoFechar()}>
+      <DialogContent titulo="Reanalisar em lote" descricao="Os itens da lista (com os filtros atuais) passam de novo pelos agentes, com os modelos escolhidos hoje em “Modelos de IA”.">
+        {!filtrado ? (
+          <Aviso tom="atencao" className="mb-3">
+            Nenhum filtro aplicado: todos os itens da auditoria seriam reanalisados. Para reanalisar só alguns, feche e filtre a lista antes (ex.: clique no quadro “Revisão do contador”).
+          </Aviso>
+        ) : null}
+        {previa.isError ? <Aviso tom="erro">{mensagemErro(previa.error)}</Aviso> : null}
+        {!p ? (
+          <Skeleton className="h-24" />
+        ) : (
+          <div className="grid gap-2 text-sm">
+            <p>
+              <b className="num">{fmtNum(p.reprocessaveis)}</b> item(ns) serão reanalisados.
+            </p>
+            {p.mantidos_aprovados ? <p className="text-tinta-2">{fmtNum(p.mantidos_aprovados)} já decidido(s) por uma pessoa (aprovados ou rejeitados) ficam como estão.</p> : null}
+            {p.em_andamento ? <p className="text-tinta-2">{fmtNum(p.em_andamento)} já estão em processamento.</p> : null}
+            <p className="text-tinta-2">
+              Custo estimado: <b className="num">{fmtUSD(p.custo_estimado_usd)}</b>, mais o Jurista para famílias que ainda não têm parecer. Respostas iguais a análises anteriores são reaproveitadas sem custo.
+            </p>
+          </div>
+        )}
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="fantasma" onClick={aoFechar}>
+            Cancelar
+          </Button>
+          <Button variant="primario" disabled={!p?.reprocessaveis || enviar.isPending} onClick={() => enviar.mutate()}>
+            <RotateCcw /> {enviar.isPending ? "Enviando…" : `Reanalisar ${fmtNum(p?.reprocessaveis ?? 0)} item(ns)`}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -65,7 +65,8 @@ def _descricao_folha(desc: str) -> str:
 def precisa_navegar(state: ItemState) -> bool:
     from app.pipeline.analista import codigo_escolhido
 
-    if state.memoria or state.confirmado_sem_ia or state.base_incompleta or state.falha_ia:
+    # Uma falha do Identificador (ex.: resposta cortada) não impede a busca guiada: ela serve de reserva.
+    if state.memoria or state.confirmado_sem_ia or state.base_incompleta:
         return False
     return codigo_escolhido(state)[1] is None
 
@@ -142,38 +143,67 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
         )
         return r
 
-    with sync_tenant_session(ctx.tenant) as s:
-        opcoes = _opcoes(s, fonte, versao, None)
-    alternativas_folhas: list[dict[str, Any]] = []
-    codigo: str | None = None
-    for _ in range(5):  # capítulo → posição (→ subnível, se muitos códigos) → código
-        # Poucos códigos finais sob o nível atual: pergunta direto entre eles.
-        if caminho:
+    def descer(raiz: dict[str, Any]) -> tuple[str | None, list[dict[str, Any]]]:
+        """Da raiz escolhida (capítulo) até o código final. Devolve (código, alternativas finais)."""
+        caminho.clear()
+        caminho.append({"codigo": raiz["codigo"], "descricao": raiz["descricao"]})
+        with sync_tenant_session(ctx.tenant) as s:
+            opcoes = _opcoes(s, fonte, versao, raiz["codigo"])
+        for _ in range(4):  # posição (→ subnível, se muitos códigos) → código
+            if not opcoes:
+                return None, []
+            # Poucos códigos finais sob o nível atual: pergunta direto entre eles.
             with sync_tenant_session(ctx.tenant) as s:
                 folhas = _folhas(s, fonte, versao, caminho[-1]["codigo"])
             if len(folhas) <= MAX_FOLHAS_DIRETAS:
                 opcoes = folhas
-        nivel = "codigo" if all(o["folha"] for o in opcoes) else ("capitulo" if not caminho else "posicao")
-        resposta = perguntar(nivel, opcoes)
-        if resposta is None or resposta.escolha is None:
-            break
-        escolhido = next(o for o in opcoes if o["codigo"] == resposta.escolha)
-        if escolhido["folha"]:
-            codigo = escolhido["codigo"]
-            alternativas_folhas = [
-                {**next(o for o in opcoes if o["codigo"] == a.codigo), "motivo": a.motivo}
-                for a in resposta.alternativas
-                if next(o for o in opcoes if o["codigo"] == a.codigo)["folha"]
-            ]
-            caminho.append({"codigo": codigo, "descricao": _descricao_folha(escolhido["descricao"])})
-            break
-        caminho.append({"codigo": escolhido["codigo"], "descricao": escolhido["descricao"]})
-        with sync_tenant_session(ctx.tenant) as s:
-            opcoes = _opcoes(s, fonte, versao, escolhido["codigo"])
-        if not opcoes:
-            break
+            nivel = "codigo" if all(o["folha"] for o in opcoes) else "posicao"
+            resposta = perguntar(nivel, opcoes)
+            if resposta is None or resposta.escolha is None:
+                return None, []
+            escolhido = next(o for o in opcoes if o["codigo"] == resposta.escolha)
+            if escolhido["folha"]:
+                por_codigo = {o["codigo"]: o for o in opcoes}
+                alternativas = [
+                    {**por_codigo[a.codigo], "motivo": a.motivo}
+                    for a in resposta.alternativas
+                    if por_codigo[a.codigo]["folha"]
+                ]
+                caminho.append({"codigo": escolhido["codigo"], "descricao": _descricao_folha(escolhido["descricao"])})
+                return escolhido["codigo"], alternativas
+            caminho.append({"codigo": escolhido["codigo"], "descricao": escolhido["descricao"]})
+            with sync_tenant_session(ctx.tenant) as s:
+                opcoes = _opcoes(s, fonte, versao, escolhido["codigo"])
+        return None, []
 
-    confianca = min((p["confianca"] for p in passos), default=0.0)
+    with sync_tenant_session(ctx.tenant) as s:
+        raizes = _opcoes(s, fonte, versao, None)
+    alternativas_folhas: list[dict[str, Any]] = []
+    codigo: str | None = None
+    inicio = 0
+    primeira = perguntar("capitulo", raizes)
+    if primeira is not None and primeira.escolha is not None:
+        por_raiz = {o["codigo"]: o for o in raizes}
+        # Se o capítulo escolhido não tiver código que sirva, tenta o capítulo alternativo mais provável.
+        tentativas = [primeira.escolha, *(a.codigo for a in primeira.alternativas)][:2]
+        for n, cap in enumerate(tentativas):
+            inicio = len(passos)
+            if n > 0:
+                passos.append(
+                    {
+                        "nivel": "capitulo",
+                        "escolha": cap,
+                        "confianca": primeira.confianca,
+                        "justificativa": "Segundo capítulo tentado: no primeiro, nenhum código serviu.",
+                    }
+                )
+            codigo, alternativas_folhas = descer(por_raiz[cap])
+            if codigo:
+                break
+
+    # Certeza do caminho que deu certo (a partir do capítulo em que o código foi achado).
+    caminho_certo = [passos[0], *passos[inicio:]] if passos else []
+    confianca = min((p["confianca"] for p in caminho_certo), default=0.0)
     with sync_tenant_session(ctx.tenant) as s:
         leque = _folhas(s, fonte, versao, codigo[:4]) if codigo else []
     candidatos = [
