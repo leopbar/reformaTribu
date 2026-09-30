@@ -103,6 +103,24 @@ def consolidar(
             "sinais_de_duvida": [],
             "arvore": arvore,
         }
+    if arvore is not None and not arvore.get("codigo") and codigo_final and codigo_final == anterior:
+        # Nem a prova nem a busca guiada acharam código melhor: o do ERP fica como referência, não confirmado.
+        duvida = (escalonamento or julgamento or {}).get("justificativa") or arvore.get("justificativa") or ""
+        return {
+            **base,
+            "situacao": "nao_confirmado",
+            "erp_mantido": True,
+            "tipo_codigo": tipo_codigo_final,
+            "codigo": codigo_final,
+            "codigo_formatado": formatar_codigo(tipo_codigo_final or "ncm", codigo_final),
+            "descricao_oficial": atual.get("descricao_completa"),
+            "confianca_modelo": 0.3,
+            "descricao_suficiente": (escalonamento or julgamento or {}).get("descricao_suficiente"),
+            "concordancia": False,
+            "entendimento": f"A análise indica que o NCM do ERP pode não descrever o item: {duvida}"[:600],
+            "sinais_de_duvida": (escalonamento or julgamento or {}).get("sinais_de_duvida", []),
+            "arvore": arvore,
+        }
     parecer = escalonamento if (escalonado and escalonamento_valido) else (julgamento if julgamento_valido else None)
     if parecer is None or not codigo_final or not tipo_codigo_final:
         motivo = "a identificação por IA não pôde ser concluída"

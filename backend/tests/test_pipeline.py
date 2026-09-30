@@ -478,13 +478,21 @@ def test_analista_completo_tempo_real(ambiente: dict[str, Any]) -> None:
     inv = _item(org, invalido)
     assert inv.status == "revisao_contador"
     assert "CODIGO_SUGERIDO_INVALIDO" in inv.motivos
+    # Nem a prova nem a busca guiada acharam código: o NCM do ERP fica como referência, não confirmado.
+    assert inv.identidade["situacao"] == "nao_confirmado" and inv.identidade["erp_mantido"] is True
+    assert inv.dimensoes["codigo_fiscal"]["situacao"] == "atencao"
 
     investigacoes = [c for c in fake.chamadas if c.startswith("investigar:")]
-    assert sorted(investigacoes) == ["investigar:20096100", "investigar:34011190", "investigar:34013000"]
+    assert sorted(investigacoes) == [
+        "investigar:20096100",
+        "investigar:22021000",
+        "investigar:34011190",
+        "investigar:34013000",
+    ]
 
     with sync_tenant_session(TenantContext.sistema(org)) as s:
         assert s.get(Audit, aid).status == "concluida"
-        assert s.scalar(select(func.count()).select_from(TaxThesis)) == 3
+        assert s.scalar(select(func.count()).select_from(TaxThesis)) == 4
         p = s.scalar(select(Pendencia).where(Pendencia.audit_id == aid))
         assert p.escopo == "grupo" and p.grupo_chave == "familia:ncm:20096100"
         assert p.item_ids == [suco]
