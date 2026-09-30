@@ -8,12 +8,14 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.api.audits import _carregar_auditoria
 from app.core.audit_trail import Acao, registrar
 from app.core.deps import Principal, SessionDep, exigir
 from app.core.errors import Conflito, NaoEncontrado
 from app.core.rbac import Perm
+from app.llm import catalogo
 from app.models import Audit, AuditItem
 from app.models.enums import StatusAuditoria, StatusItem, StatusRevisao
 from app.review import service
@@ -181,6 +183,13 @@ async def reprocessar(item_id: uuid.UUID, principal: Revisar, session: SessionDe
     i.status, i.etapa, i.motivos, i.perguntas = StatusItem.PENDENTE, None, [], []
     i.aprovado_automaticamente = False
     if a.status == StatusAuditoria.CONCLUIDA:
+        # Auditoria encerrada: a reanálise usa os modelos escolhidos hoje em "Modelos de IA".
+        agentes = await run_in_threadpool(catalogo.agentes_configurados)
+        a.configuracao = {
+            **(a.configuracao or {}),
+            "modelos": {k: v["modelo"] for k, v in agentes.items()},
+            "esforcos": {k: v["esforco"] for k, v in agentes.items()},
+        }
         a.status = StatusAuditoria.PROCESSANDO
     # Reprocessamentos individuais usam sempre a API em tempo real.
     a.modo = "tempo_real"
@@ -195,6 +204,104 @@ async def reprocessar(item_id: uuid.UUID, principal: Revisar, session: SessionDe
     await session.commit()
     celery_app.send_task("auditoria.processar_itens", args=[str(a.id), str(a.org_id), [str(item_id)]], queue="pipeline")
     return _out(i, "Reprocessamento iniciado")
+
+
+class ReprocessarLoteIn(BaseModel):
+    item_ids: list[uuid.UUID] = Field(min_length=1, max_length=5000)
+    confirmar: bool = False  # False = só prévia (quantos itens e custo estimado)
+
+
+class ReprocessarLoteOut(BaseModel):
+    reprocessaveis: int
+    mantidos_aprovados: int
+    em_andamento: int
+    custo_estimado_usd: float
+    enviado: bool
+    mensagem: str
+
+
+@router.post("/auditorias/{audit_id}/reprocessar-lote", response_model=ReprocessarLoteOut)
+async def reprocessar_lote(
+    audit_id: uuid.UUID, dados: ReprocessarLoteIn, principal: Revisar, session: SessionDep
+) -> ReprocessarLoteOut:
+    """Reanalisa vários itens de uma vez (os da lista filtrada), com os modelos escolhidos hoje.
+
+    Itens decididos por uma pessoa (aprovados ou rejeitados) e itens ainda em processamento ficam de fora."""
+    from sqlalchemy import select
+
+    from app.audits.processing import enfileirar_itens
+    from app.ingest import estimate
+
+    a = await _carregar_auditoria(session, principal, audit_id)
+    if a.status not in (StatusAuditoria.CONCLUIDA, StatusAuditoria.PROCESSANDO):
+        raise Conflito("Só é possível reanalisar itens de auditorias em andamento ou concluídas.")
+    itens = list(
+        await session.scalars(
+            select(AuditItem).where(
+                AuditItem.audit_id == audit_id, AuditItem.id.in_(dados.item_ids), AuditItem.ignorado.is_(False)
+            )
+        )
+    )
+    decididos = [
+        i
+        for i in itens
+        if i.revisao_status == StatusRevisao.REJEITADO
+        or (i.revisao_status == StatusRevisao.APROVADO and not i.aprovado_automaticamente)
+    ]
+    rodando = [i for i in itens if i.status in (StatusItem.PENDENTE, StatusItem.PROCESSANDO)]
+    fora = {i.id for i in decididos} | {i.id for i in rodando}
+    alvo = [i for i in itens if i.id not in fora]
+    sem_codigo = sum(1 for i in alvo if not (i.identidade or {}).get("codigo"))
+    previsao = {"itens_com_ia": len(alvo), "familias_novas": 0, "sem_codigo_valido": sem_codigo}
+    est = await run_in_threadpool(lambda: estimate.estimar(previsao, 0.4, lote=False))
+    custo = float(est["custo_usd_estimado"])
+    resumo = f"{len(alvo)} item(ns) para reanalisar"
+    if decididos:
+        resumo += f"; {len(decididos)} decidido(s) por pessoas ficam como estão"
+    if rodando:
+        resumo += f"; {len(rodando)} já em processamento"
+    if not dados.confirmar or not alvo:
+        return ReprocessarLoteOut(
+            reprocessaveis=len(alvo),
+            mantidos_aprovados=len(decididos),
+            em_andamento=len(rodando),
+            custo_estimado_usd=custo,
+            enviado=False,
+            mensagem=resumo + ".",
+        )
+    for i in alvo:
+        if i.revisao_status == StatusRevisao.APROVADO:
+            i.revisao_status = StatusRevisao.PENDENTE
+        i.tentativa += 1
+        i.status, i.etapa, i.motivos, i.perguntas = StatusItem.PENDENTE, None, [], []
+        i.aprovado_automaticamente = False
+    if a.status == StatusAuditoria.CONCLUIDA:
+        agentes = await run_in_threadpool(catalogo.agentes_configurados)
+        a.configuracao = {
+            **(a.configuracao or {}),
+            "modelos": {k: v["modelo"] for k, v in agentes.items()},
+            "esforcos": {k: v["esforco"] for k, v in agentes.items()},
+        }
+        a.status = StatusAuditoria.PROCESSANDO
+    a.modo = "tempo_real"
+    await registrar(
+        session,
+        principal,
+        Acao.ITEM_REPROCESSADO,
+        entidade="auditoria",
+        entidade_id=audit_id,
+        detalhes={"itens": len(alvo), "custo_estimado_usd": custo},
+    )
+    await session.commit()
+    enfileirar_itens(a.id, a.org_id, [i.id for i in alvo])
+    return ReprocessarLoteOut(
+        reprocessaveis=len(alvo),
+        mantidos_aprovados=len(decididos),
+        em_andamento=len(rodando),
+        custo_estimado_usd=custo,
+        enviado=True,
+        mensagem=f"Reanálise iniciada: {resumo}.",
+    )
 
 
 # ================================================================================== lote ==

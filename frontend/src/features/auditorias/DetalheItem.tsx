@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { api, ok } from "@/api/client";
 import { useAuth } from "@/auth/auth";
-import { Codigo, ConfiancaGlobal, EstadoErro, mensagemErro, Motivo, ORIGEM_FATO, RelatorioConfianca, SeloRevisao, SeloStatus } from "@/components/dominio";
+import { Codigo, ConfiancaGlobal, EstadoErro, mensagemErro, Motivo, ORIGEM_FATO, RelatorioConfianca, SeloRevisao, SeloStatus, SITUACAO_DIMENSAO } from "@/components/dominio";
 import { ReguaConferencia, type CodigoInfo } from "@/components/ReguaConferencia";
 import { Aviso, Button, Dialog, DialogContent, Input, Kbd, Skeleton, Tabs, TabsContent, TabsList, TabsTrigger, Textarea } from "@/components/ui/primitives";
 import { fmtData, fmtDataHora, fmtUSD } from "@/lib/format";
@@ -198,6 +198,10 @@ export function DetalheItem({
           </span>
         </p>
       </div>
+
+      {it.revisao_status === "pendente" && it.status !== "classificado" ? (
+        <PorQueVeio dimensoes={d.dimensoes as { chave: string; rotulo: string; situacao: string; texto: string }[]} perguntas={perguntas.length} status={it.status} />
+      ) : null}
 
       <Tabs value={vista} onValueChange={mudarVista}>
         <TabsList>
@@ -459,6 +463,51 @@ export function DetalheItem({
         desfazer={() => (aprovadoHumano || it.revisao_status === "rejeitado") && acoes.desfazer.mutate()}
       />
     </div>
+  );
+}
+
+// O que o revisor deve conferir em cada dimensão que não ficou confirmada.
+const O_QUE_CONFERIR: Record<string, string> = {
+  identificacao: "Confira se o NCM sugerido descreve o produto (seção Identificação do item). Se não, use Corrigir ou um candidato com “Usar”.",
+  codigo_fiscal: "Compare o código atual com o sugerido. Se o sugerido estiver certo, aprove; senão, corrija.",
+  contexto: "Falta um dado da empresa: complete o dossiê da empresa ou responda a pergunta.",
+  regra: "O enquadramento não fechou: responda às perguntas ou leia o raciocínio da família.",
+  condicoes: "Falta confirmar uma condição da lei: responda à pergunta acima.",
+  excecoes: "Verifique se alguma exceção da lei se aplica ao item.",
+  cclasstrib: "O cClassTrib escolhido tem um problema na tabela oficial (vigência ou documento). Confira a fundamentação.",
+  fonte: "O benefício não tem trecho da lei citado. Leia o raciocínio da família antes de aprovar.",
+  conflito: "As fontes oficiais divergem sobre o enquadramento: leia o raciocínio da família e decida qual prevalece.",
+  imposto_seletivo: "Confirme se o item está sujeito ao Imposto Seletivo (bebidas açucaradas, alcoólicas, fumo…).",
+};
+
+/** Resumo do motivo da revisão: só as dimensões que não ficaram confirmadas, com o que conferir. */
+function PorQueVeio({ dimensoes, perguntas, status }: { dimensoes: { chave: string; rotulo: string; situacao: string; texto: string }[]; perguntas: number; status: string }) {
+  const abertas = dimensoes.filter((d) => d.situacao !== "ok" && d.situacao !== "nao_aplicavel" && d.situacao !== "na");
+  if (!abertas.length && !perguntas) return null;
+  const quem = status === "revisao_especialista" ? "o especialista" : status === "aguardando_informacao" ? "você" : "o contador";
+  return (
+    <section className="rounded-lg border border-caneta/40 bg-caneta-suave p-4">
+      <h3 className="text-sm font-semibold">Por que veio para {quem}</h3>
+      <ul className="mt-2 grid gap-2">
+        {abertas.map((d) => {
+          const s = SITUACAO_DIMENSAO[d.situacao] ?? SITUACAO_DIMENSAO.atencao!;
+          const Icone = s.icone;
+          return (
+            <li key={d.chave} className="text-sm">
+              <p className="flex items-start gap-1.5">
+                <Icone className={cn("mt-0.5 size-4 shrink-0", s.cor)} aria-hidden />
+                <span>
+                  <b>{d.rotulo}</b> <span className={cn("text-2xs font-medium", s.cor)}>{s.rotulo}</span>
+                  {d.texto ? <span className="block text-xs text-tinta-2">{d.texto}</span> : null}
+                  {O_QUE_CONFERIR[d.chave] ? <span className="block text-xs font-medium text-caneta">O que fazer: {O_QUE_CONFERIR[d.chave]}</span> : null}
+                </span>
+              </p>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-3 text-2xs text-tinta-3">Estando tudo certo, use Aprovar (A). NCM errado: Corrigir (E). Item que não deve ser classificado: Rejeitar (R).</p>
+    </section>
   );
 }
 

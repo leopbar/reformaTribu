@@ -346,3 +346,46 @@ def test_conflito_antigo_so_trava_se_apontar_outro_cclasstrib_permitido() -> Non
     av = avaliar(entrada({"adicao_acucar": fato("nao")}, tese=tese(conflitos=[real])))
     assert av.status == "revisao_especialista"
     assert "CONFLITO_NORMATIVO" in av.motivos
+
+
+# ------------------------------------------------------ dúvida de identificação imaterial --
+DUVIDA = {
+    **IDENTIDADE_OK,
+    "confianca_modelo": 0.8,
+    "sinais_de_duvida": ["não informa se tem açúcar"],
+    "codigos_alternativos": ["20096900"],
+}
+
+
+def test_duvida_que_nao_muda_o_imposto_nao_manda_ao_contador() -> None:
+    mesmo = {"20096900": "200034|nao_sujeito"}
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=DUVIDA, tratamento_alternativas=mesmo))
+    assert av.status == "classificado"
+    ident = next(d for d in av.dimensoes if d.chave == "identificacao")
+    assert "não muda o imposto" in ident.texto
+
+
+def test_duvida_que_muda_ou_nao_se_sabe_continua_com_o_contador() -> None:
+    for trat in ({"20096900": "000001|nao_sujeito"}, {"20096900": None}):
+        av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=DUVIDA, tratamento_alternativas=trat))
+        assert av.status == "revisao_contador"
+
+
+# ------------------------------------------------------------ checagem cruzada com os anexos --
+def test_nome_do_produto_no_anexo() -> None:
+    from app.analise.anexos import _cita, nome_do_produto
+
+    assert nome_do_produto("Água sanitária classificada no código 3808.94.19 da NCM/SH") == "agua sanitaria"
+    assert nome_do_produto("Arroz das subposições 1006.20 e 1006.30") == "arroz"
+    assert _cita("agua sanitaria 2 l", "agua sanitaria")
+    assert _cita("arroz branco tipo 1", "arroz")
+    assert not _cita("biscoito de arroz", "arroz")
+
+
+def test_produto_citado_na_lei_com_outro_codigo_vai_ao_contador() -> None:
+    citado = [{"anexo": "VIII", "item": "5", "produto": "agua sanitaria", "codigos": ["3808.94.19"]}]
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, produtos_na_lei=citado))
+    assert av.status == "revisao_contador"
+    assert "PRODUTO_CITADO_NA_LEI" in av.motivos
+    cod = next(d for d in av.dimensoes if d.chave == "codigo_fiscal")
+    assert "3808.94.19" in cod.texto

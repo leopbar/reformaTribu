@@ -34,6 +34,7 @@ class Motivo(StrEnum):
     ITEM_DUPLICADO = "ITEM_DUPLICADO"
     FATO_PENDENTE = "FATO_PENDENTE"
     CONFLITO_NORMATIVO = "CONFLITO_NORMATIVO"
+    PRODUTO_CITADO_NA_LEI = "PRODUTO_CITADO_NA_LEI"
     SEM_HIPOTESE_SUSTENTADA = "SEM_HIPOTESE_SUSTENTADA"
     TESE_NAO_CONCLUIDA = "TESE_NAO_CONCLUIDA"
 
@@ -96,6 +97,10 @@ TEXTOS: dict[str, tuple[str, str]] = {
     "FATO_PENDENTE": (
         "Falta uma informação",
         "Um fato que muda o enquadramento ainda não foi confirmado; há uma pergunta aberta.",
+    ),
+    "PRODUTO_CITADO_NA_LEI": (
+        "Lei cita o produto com outro NCM",
+        "Um anexo da lei nomeia este produto com outro código: o NCM do cadastro pode estar errado e o imposto mudar.",
     ),
     "CONFLITO_NORMATIVO": (
         "Conflito entre fontes",

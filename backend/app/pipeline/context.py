@@ -103,7 +103,7 @@ def carregar_contexto(audit_id: uuid.UUID, org_id: uuid.UUID, forcar: bool = Fal
             return modelos_conf.get(agente) or (conf.get(legado) if legado else None) or agentes[agente]["modelo"]
 
         def esforco(agente: str, legado: str) -> str:
-            return esforcos_conf.get(agente) or conf.get(legado) or agentes[agente]["esforco"]
+            return esforcos_conf.get(agente) or (conf.get(legado) if legado else None) or agentes[agente]["esforco"]
 
         ctx = Contexto(
             org_id=org_id,
@@ -140,8 +140,9 @@ def carregar_contexto(audit_id: uuid.UUID, org_id: uuid.UUID, forcar: bool = Fal
             modelo_investigacao=modelo("jurista", "modelo_investigacao"),
             esforco_investigacao=esforco("jurista", "esforco_investigacao"),
             modelo_fatos=modelo("leitor_fatos", "modelo_fatos"),
-            modelo_navegador=modelo("navegador", "modelo_principal"),
-            esforco_navegador=esforco("navegador", "esforco_principal"),
+            # Agente criado depois das auditorias antigas: sem modelo congelado, usa o escolhido hoje.
+            modelo_navegador=modelo("navegador"),
+            esforco_navegador=esforco("navegador", ""),
         )
     _CACHE[audit_id] = ctx
     return ctx

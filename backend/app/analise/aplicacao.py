@@ -58,12 +58,13 @@ def entrada(
         session, empresa, item_chave=item.codigo_interno, categoria=item.categoria, familia=familia
     )
     ev = (tese.evidencias if tese else None) or {}
+    fatos = {k: f.como_dict() for k, f in resolvidos.items()}
     return EntradaAvaliacao(
         identidade=idt,
         tese=tese.resultado if tese is not None and tese.status == "concluida" else None,
         cclasstrib=ev.get("cclasstrib", {}),
         refs=ev.get("refs", {}),
-        fatos={k: f.como_dict() for k, f in resolvidos.items()},
+        fatos=fatos,
         correlacionados=ev.get("correlacionados", []),
         precedentes=ev.get("precedentes", []),
         alertas=ev.get("alertas", []),
@@ -72,7 +73,84 @@ def entrada(
         base_incompleta=base_incompleta,
         is_exige_analise=bool(cfg.imposto_seletivo_exige_analise) if cfg else True,
         tese_aprovada=bool(tese and tese.aprovada_em),
+        tratamento_alternativas=tratamento_alternativas(session, item, audit, fatos),
+        produtos_na_lei=_produtos_na_lei(session, item, audit),
     )
+
+
+def _produtos_na_lei(session: Session, item: AuditItem, audit: Audit) -> list[dict[str, Any]]:
+    from app.analise.anexos import produtos_citados_com_outro_codigo
+
+    idt = item.identidade or {}
+    snap = session.get(RefSnapshot, audit.snapshot_id) if audit.snapshot_id else None
+    versao_lei = ((snap.versoes if snap else None) or {}).get("lc214")
+    return produtos_citados_com_outro_codigo(
+        session, versao_lei, item.descricao_normalizada or item.descricao, idt.get("tipo_codigo"), idt.get("codigo")
+    )
+
+
+def tratamento_alternativas(
+    session: Session, item: AuditItem, audit: Audit, fatos: dict[str, dict[str, Any]]
+) -> dict[str, str | None]:
+    """Para cada código alternativo da dúvida de identificação, o tratamento ("cClassTrib|IS") que ele
+    teria. Sem IA: usa o parecer já existente da família ou, se não houver, a base oficial."""
+    idt = item.identidade or {}
+    tipo = idt.get("tipo_codigo")
+    if not tipo or not idt.get("codigos_alternativos"):
+        return {}
+    snap = session.get(RefSnapshot, audit.snapshot_id) if audit.snapshot_id else None
+    versoes = (snap.versoes if snap else None) or {}
+    return {
+        cod: tratamento_do_codigo(session, tipo, cod, item.cenario, audit.data_referencia, versoes, fatos)
+        for cod in idt["codigos_alternativos"][:3]
+    }
+
+
+def tratamento_do_codigo(
+    session: Session,
+    tipo: str,
+    codigo: str,
+    cenario: str,
+    data_referencia: Any,
+    versoes: dict[str, Any],
+    fatos: dict[str, dict[str, Any]],
+) -> str | None:
+    from app.analise.avaliacao import escolher
+    from app.analise.evidencias import prefixos
+
+    tese = session.scalar(
+        select(TaxThesis)
+        .where(
+            TaxThesis.status == "concluida",
+            TaxThesis.tipo_codigo == tipo,
+            TaxThesis.codigo == codigo,
+            TaxThesis.cenario == cenario,
+            TaxThesis.data_referencia == data_referencia,
+        )
+        .order_by(TaxThesis.created_at.desc())
+        .limit(1)
+    )
+    if tese is not None:
+        h, _, _ = escolher((tese.resultado or {}).get("hipoteses", []), fatos)
+        situacao = ((tese.resultado or {}).get("imposto_seletivo") or {}).get("situacao", "nao_sujeito")
+        if h is None or situacao == "depende":
+            return None
+        return f"{h['cclasstrib']}|{'sujeito' if situacao == 'sujeito' else 'nao_sujeito'}"
+    # Sem parecer: se nem a correlação oficial nem nenhum anexo da lei citam o código, vale a regra geral.
+    pref = prefixos(codigo)
+    v_cct, v_lc = versoes.get("cclasstrib"), versoes.get("lc214")
+    if not v_cct or not v_lc:
+        return None
+    citacoes = session.scalar(
+        text(
+            "SELECT (SELECT count(*) FROM cclasstrib_correlacoes WHERE version_id = :vc "
+            "AND codigo_ncm_nbs = ANY(:p) AND upper(coalesce(tipo_permissao, '')) <> 'VEDADO') + "
+            "(SELECT count(*) FROM legal_provisions WHERE version_id = :vl AND tipo = 'anexo_item' "
+            "AND codigos_citados && CAST(:p AS varchar[]))"
+        ),
+        {"vc": uuid.UUID(str(v_cct)), "vl": uuid.UUID(str(v_lc)), "p": pref},
+    )
+    return "000001|nao_sujeito" if not citacoes else None
 
 
 def _dispositivo(av: Avaliacao) -> str | None:
@@ -188,8 +266,9 @@ def aplicar(
     item.imposto_seletivo = av.is_situacao == "sujeito"
     item.tipo_tratamento = av.tratamento
     item.dispositivo_legal = _dispositivo(av)
-    item.tipo_codigo_sugerido = idt.get("tipo_codigo") or item.tipo_codigo_sugerido
-    item.codigo_sugerido = idt.get("codigo") or item.codigo_sugerido
+    # Sem código na análise atual, não sobra sugestão de uma análise anterior na tela.
+    item.tipo_codigo_sugerido = idt.get("tipo_codigo") or (item.tipo_codigo_sugerido if idt.get("codigo") else None)
+    item.codigo_sugerido = idt.get("codigo")
     item.motivos = list(dict.fromkeys([*(motivos_identidade or []), *av.motivos]))
     item.perguntas = _registrar_perguntas(session, item, av)
     item.etapa = "concluido"

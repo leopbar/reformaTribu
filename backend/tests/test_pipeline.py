@@ -28,6 +28,14 @@ NCM = {
     "20096100": "Suco de uva, outros",
     "22": "Bebidas, líquidos alcoólicos e vinagres",
     "22021000": "Águas, incluindo as águas minerais, adicionadas de açúcar, refrigerantes",
+    "28": "Produtos químicos inorgânicos",
+    "2828": "Hipocloritos",
+    "282890": "Outros",
+    "28289011": "Hipoclorito de sódio",
+    "38": "Produtos diversos das indústrias químicas",
+    "3808": "Inseticidas, desinfetantes e produtos semelhantes",
+    "380894": "Desinfetantes",
+    "38089419": "Desinfetantes para uso domissanitário, outros",
 }
 
 
@@ -100,7 +108,11 @@ class FakeClaude:
                 "outros": [],
             },
         }
-        if "LIQ" in desc:
+        citados = [c["codigo"] for c in conteudo["candidatos"] if c.get("citado_na_lei")]
+        if "AGUA SANITARIA" in desc:
+            escolha = citados[0] if citados else "28289011"
+            r = {**base, "ncm_atual_coerente": not citados, "codigo_sugerido": escolha, "confianca": 0.92}
+        elif "LIQ" in desc:
             r = {**base, "ncm_atual_coerente": False, "codigo_sugerido": "34013000", "confianca": 0.94}
         elif "BARRA" in desc:
             r = {**base, "ncm_atual_coerente": True, "codigo_sugerido": "34011190", "confianca": 0.97}
@@ -116,6 +128,18 @@ class FakeClaude:
     def _arvore(self, c: dict[str, Any]) -> dict[str, Any]:
         opcoes = [o["codigo"] for o in c["opcoes"]]
         nada = {"escolha": None, "alternativas": [], "confianca": 0.1, "justificativa": "teste"}
+        if "SABONETE CAPITULO ERRADO" in c["item"]["descricao_original"]:
+            # 1º capítulo sem código que sirva; o alternativo (34) tem o código certo.
+            if c["nivel"] == "capitulo":
+                return {
+                    **nada,
+                    "escolha": "20",
+                    "alternativas": [{"codigo": "34", "motivo": "sabão"}],
+                    "confianca": 0.6,
+                }
+            if "34013000" in opcoes:
+                return {**nada, "escolha": "34013000", "confianca": 0.8}
+            return nada
         if "KIT SABONETE" not in c["item"]["descricao_original"]:
             return nada  # ex.: "PRODUTO MISTERIOSO" não cabe em nenhum capítulo
         for alvo in ("34013000", "3401", "34"):
@@ -304,6 +328,15 @@ def ambiente(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
                     titulo_anexo="ALIMENTOS",
                     texto="Sucos naturais de fruta sem adição de açúcar 2009",
                     codigos_citados=["2009"],
+                ),
+                LegalProvision(
+                    version_id=v_lc.id,
+                    tipo="anexo_item",
+                    anexo="VIII",
+                    item="5",
+                    titulo_anexo="PRODUTOS DE HIGIENE PESSOAL E LIMPEZA",
+                    texto="Água sanitária classificada no código 3808.94.19 da NCM/SH",
+                    codigos_citados=["38089419"],
                 ),
                 LegalProvision(
                     version_id=v_lc.id,
@@ -627,3 +660,30 @@ def test_item_sem_ncm_recebe_sugestao_pela_arvore_oficial(ambiente: dict[str, An
     assert i.status == "revisao_contador"  # o NCM sugerido precisa de confirmação
     assert any(c.startswith("arvore-capitulo:") for c in fake.chamadas)
     assert any(c.startswith("arvore-codigo:") for c in fake.chamadas)
+
+
+def test_navegador_tenta_o_capitulo_alternativo(ambiente: dict[str, Any]) -> None:
+    from app.audits.processing import processar_itens
+
+    org = ambiente["org_id"]
+    aid, (item,) = ambiente["nova_auditoria"]([("SABONETE CAPITULO ERRADO", None)])
+    processar_itens(aid, org, [item])
+    i = _item(org, item)
+    assert i.codigo_sugerido == "34013000"
+    assert i.identidade["arvore"]["caminho"][0]["codigo"] == "34"
+
+
+def test_codigo_citado_na_lei_entra_na_prova_e_a_troca_vai_ao_contador(ambiente: dict[str, Any]) -> None:
+    from app.audits.processing import processar_itens
+
+    org = ambiente["org_id"]
+    aid, (agua,) = ambiente["nova_auditoria"]([("AGUA SANITARIA 2L", "28289011")])
+    processar_itens(aid, org, [agua])
+    i = _item(org, agua)
+    # O código que a lei atribui ao produto entrou na prova e a IA corrigiu o NCM.
+    assert i.codigo_sugerido == "38089419"
+    assert i.identidade["situacao"] == "corrigido"
+    assert "Anexo VIII" in i.identidade["corrigido_pela_lei"]
+    # A troca motivada pela lei nunca é aprovada sozinha.
+    assert i.status == "revisao_contador"
+    assert i.dimensoes["codigo_fiscal"]["situacao"] == "atencao"

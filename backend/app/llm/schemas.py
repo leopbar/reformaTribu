@@ -38,6 +38,7 @@ _PROPRIEDADES_JULGAMENTO: dict[str, Any] = {
     },
     "justificativa": {"type": "string"},
     "sinais_de_duvida": {"type": "array", "items": {"type": "string"}},
+    "codigos_alternativos": {"type": "array", "items": {"type": "string"}},
 }
 
 SCHEMA_JULGAMENTO: dict[str, Any] = {
@@ -146,6 +147,13 @@ class Julgamento(BaseModel):
     atributos_extraidos: AtributosExtraidos
     justificativa: str
     sinais_de_duvida: list[str] = Field(default_factory=list)
+    # Outros códigos da lista que a dúvida poderia justificar (vazio nas análises antigas).
+    codigos_alternativos: list[str] = Field(default_factory=list)
+
+    @field_validator("codigos_alternativos")
+    @classmethod
+    def _so_digitos(cls, v: list[str]) -> list[str]:
+        return [d for d in ("".join(c for c in x if c.isdigit()) for x in v) if d][:3]
 
     @field_validator("confianca")
     @classmethod

@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from app.analise.fatos import DESCONHECIDO, chave, valor
+from app.core.codes import formatar_codigo
 from app.models.enums import NivelRevisao, StatusItem
 
 OK, ATENCAO, PENDENTE, FALHA, NA = "ok", "atencao", "pendente", "falha", "nao_aplicavel"
@@ -70,6 +71,11 @@ class EntradaAvaliacao:
     base_incompleta: bool = False
     is_exige_analise: bool = True
     tese_aprovada: bool = False
+    # Códigos alternativos citados na dúvida de identificação → "cClassTrib|IS" que teriam
+    # (None = não dá para saber sem investigar). Serve para saber se a dúvida muda o imposto.
+    tratamento_alternativas: dict[str, str | None] = field(default_factory=dict)
+    # Produtos que um anexo da lei nomeia com outro código (checagem cruzada com os anexos).
+    produtos_na_lei: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -232,6 +238,16 @@ def _identidade(ent: EntradaAvaliacao) -> tuple[Dimensao, Dimensao]:
         d_id = Dimensao("identificacao", FALHA, "; ".join(duvidas)[:300] or "identificação com baixa segurança")
     cod = idt.get("codigo_formatado") or idt.get("codigo")
     anterior = idt.get("codigo_anterior_formatado") or idt.get("codigo_anterior")
+    if idt.get("corrigido_pela_lei"):
+        # O NCM foi trocado pelo código que a lei atribui ao produto: uma pessoa confirma antes de valer.
+        return d_id, Dimensao(
+            "codigo_fiscal",
+            ATENCAO,
+            (
+                f"NCM {'corrigido de ' + str(anterior) + ' para ' if anterior else 'sugerido: '}{cod}, "
+                f"o código que a lei atribui ao produto ({idt['corrigido_pela_lei']}). Confirme a correção."
+            )[:300],
+        )
     if sit in ("confirmado", "memoria"):
         d_cod = Dimensao("codigo_fiscal", OK, f"{cod} confirmado")
     elif sit == "corrigido":
@@ -494,6 +510,38 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
         dims["imposto_seletivo"] = Dimensao("imposto_seletivo", OK, is_.get("explicacao") or "não sujeito")
     if sobre_is and dims["imposto_seletivo"].situacao == OK and sit != "nao_sujeito":
         dims["imposto_seletivo"] = Dimensao("imposto_seletivo", ATENCAO, "; ".join(sobre_is)[:400])
+
+    # --- a dúvida de identificação muda o imposto? ---------------------------------------------------
+    alternativas = ent.tratamento_alternativas
+    if alternativas and dims["identificacao"].situacao == ATENCAO and av.cclasstrib and sit != "indefinido":
+        atual = f"{av.cclasstrib}|{'sujeito' if sit == 'sujeito' else 'nao_sujeito'}"
+        if all(t == atual for t in alternativas.values()):
+            idt = ent.identidade or {}
+            cod = idt.get("codigo_formatado") or idt.get("codigo")
+            outros = " ou ".join(formatar_codigo(idt.get("tipo_codigo") or "ncm", c) for c in alternativas)
+            dims["identificacao"] = Dimensao(
+                "identificacao",
+                OK,
+                (
+                    f"A dúvida sobre o código não muda o imposto: {cod} ou {outros} têm o mesmo tratamento "
+                    f"(cClassTrib {av.cclasstrib}). Dúvida registrada: {dims['identificacao'].texto}"
+                )[:300],
+            )
+
+    # --- a lei nomeia este produto com outro código? -------------------------------------------------
+    if ent.produtos_na_lei and dims["codigo_fiscal"].situacao != FALHA:
+        idt = ent.identidade or {}
+        cod = idt.get("codigo_formatado") or idt.get("codigo")
+        p = ent.produtos_na_lei[0]
+        dims["codigo_fiscal"] = Dimensao(
+            "codigo_fiscal",
+            ATENCAO,
+            (
+                f"A lei cita “{p['produto']}” no código {' / '.join(p['codigos'])} (Anexo {p['anexo']}, item "
+                f"{p['item']}); o item está em {cod}. Confira o NCM: com o código da lei o imposto pode mudar."
+            )[:300],
+        )
+        motivos.append("PRODUTO_CITADO_NA_LEI")
 
     # --- conclusão em linguagem humana ---------------------------------------------------------------
     av.fatos_usados = [

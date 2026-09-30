@@ -166,6 +166,7 @@ def rota(r: Registro) -> list[str]:
                     or r.julgamento_valido is not None
                     or (bool(r.candidatos) and r.arvore is None)
                     or not r.candidatos_conhecidos
+                    or "identificador" in r.chamadas
                 )
                 valido = _julgamento_valido(r)
                 if identificou:
