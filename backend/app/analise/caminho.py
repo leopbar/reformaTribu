@@ -175,7 +175,8 @@ def rota(r: Registro) -> list[str]:
                         caminho.append("segundo_parecer")
                 if r.arvore is not None:
                     caminho.append("navegador")
-                    caminho.append("jurista" if r.arvore.get("codigo") else "juiz")
+                    segue = r.arvore.get("codigo") or r.identidade.get("erp_mantido")
+                    caminho.append("jurista" if segue else "juiz")
                 elif not identificou or (r.julgamento and not valido):
                     caminho.append("juiz")  # itens de antes da busca guiada: sem código, direto ao Juiz
                 else:
@@ -503,6 +504,14 @@ def _navegador(r: Registro) -> Passo:
         return Passo("navegador", "feito", resumo, d)
     if a.get("erro"):
         return Passo("navegador", "falhou", f"A busca guiada não pôde ser feita: {a['erro']}", d)
+    if r.identidade.get("erp_mantido"):
+        return Passo(
+            "navegador",
+            "falhou",
+            "Desceu pela tabela oficial e não achou código melhor; o NCM do ERP ficou como referência, "
+            "não confirmado, para o contador decidir.",
+            d,
+        )
     return Passo("navegador", "falhou", "Desceu pela tabela oficial, mas nenhuma opção descreve o item.", d)
 
 

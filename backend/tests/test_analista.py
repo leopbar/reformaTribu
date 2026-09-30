@@ -389,3 +389,18 @@ def test_produto_citado_na_lei_com_outro_codigo_vai_ao_contador() -> None:
     assert "PRODUTO_CITADO_NA_LEI" in av.motivos
     cod = next(d for d in av.dimensoes if d.chave == "codigo_fiscal")
     assert "3808.94.19" in cod.texto
+
+
+def test_duvida_imaterial_nao_aprova_ncm_criado_descricao_vaga_ou_certeza_baixa() -> None:
+    mesmo = {"20096900": "200034|nao_sujeito"}
+    casos = [
+        {**DUVIDA, "situacao": "sugerido"},  # o ERP não tinha NCM: o sistema criou um
+        {**DUVIDA, "descricao_suficiente": False},  # a descrição não diz o que é o item
+        {**DUVIDA, "confianca_modelo": 0.64},  # certeza baixa
+    ]
+    for idt in casos:
+        av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=idt, tratamento_alternativas=mesmo))
+        assert av.status == "revisao_contador", idt
+        ident = next(d for d in av.dimensoes if d.chave == "identificacao")
+        if ident.situacao == "atencao":  # com certeza baixa a identificação já é "falha"
+            assert "O imposto seria o mesmo" in ident.texto

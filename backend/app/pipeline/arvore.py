@@ -149,7 +149,7 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
         caminho.append({"codigo": raiz["codigo"], "descricao": raiz["descricao"]})
         with sync_tenant_session(ctx.tenant) as s:
             opcoes = _opcoes(s, fonte, versao, raiz["codigo"])
-        for _ in range(4):  # posição (→ subnível, se muitos códigos) → código
+        for _ in range(7):  # posição → subposições (quantas a tabela tiver) → código
             if not opcoes:
                 return None, []
             # Poucos códigos finais sob o nível atual: pergunta direto entre eles.

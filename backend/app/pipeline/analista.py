@@ -55,6 +55,10 @@ def codigo_escolhido(state: ItemState) -> tuple[str | None, str | None, dict[str
         # Código sugerido pela busca guiada na árvore oficial (o julgamento não tinha encontrado um).
         atributos = AtributosExtraidos.model_validate(j["atributos_extraidos"]).como_dict() if j else {}
         return state.arvore["tipo_codigo"], state.arvore["codigo"], atributos
+    if state.arvore is not None and (erp := codigo_erp_valido(state)):
+        # A busca guiada também não achou nada: o NCM do ERP fica como referência (não confirmado),
+        # para o item não ficar sem código nem sem análise da lei.
+        return erp[0], erp[1], {}
     esc = state.escalonamento if state.escalonamento_valido else None
     fonte = esc or j
     if fonte is None:
@@ -67,6 +71,14 @@ def codigo_escolhido(state: ItemState) -> tuple[str | None, str | None, dict[str
             atributos, AtributosExtraidos.model_validate(esc["atributos_extraidos"]).como_dict()
         )
     return tipo, codigo, atributos
+
+
+def codigo_erp_valido(state: ItemState) -> tuple[str, str] | None:
+    """(tipo, código) do cadastro, se ele existe na tabela oficial, é completo e vale na data."""
+    atual = (state.estrutura or {}).get("codigo_atual") or {}
+    if atual.get("codigo") and atual.get("existe") and atual.get("folha") and atual.get("vigente", True):
+        return str(atual.get("tipo") or "ncm"), str(atual["codigo"])
+    return None
 
 
 def identidade(state: ItemState) -> dict[str, Any]:

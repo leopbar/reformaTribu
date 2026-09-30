@@ -205,6 +205,18 @@ def _identidade(ent: EntradaAvaliacao) -> tuple[Dimensao, Dimensao]:
     sit = idt.get("situacao")
     conf = float(idt.get("confianca_modelo") or 0)
     duvidas = idt.get("sinais_de_duvida") or []
+    if sit == "nao_confirmado":
+        # O NCM do ERP foi mantido só como referência: a IA acha que ele não descreve o item e não achou outro.
+        cod = idt.get("codigo_formatado") or idt.get("codigo")
+        return (
+            Dimensao("identificacao", ATENCAO, (idt.get("entendimento") or "identificação não confirmada")[:300]),
+            Dimensao(
+                "codigo_fiscal",
+                ATENCAO,
+                f"NCM do ERP ({cod}) mantido como referência, não confirmado: provavelmente não descreve o item, "
+                "e a busca não encontrou código melhor. Confirme ou corrija.",
+            ),
+        )
     if sit in (None, "indefinido") or not idt.get("codigo"):
         motivo = idt.get("motivo") or "não foi possível identificar o item com segurança"
         return Dimensao("identificacao", FALHA, motivo[:300]), Dimensao("codigo_fiscal", FALHA, "sem código definido")
@@ -519,14 +531,32 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
             idt = ent.identidade or {}
             cod = idt.get("codigo_formatado") or idt.get("codigo")
             outros = " ou ".join(formatar_codigo(idt.get("tipo_codigo") or "ncm", c) for c in alternativas)
-            dims["identificacao"] = Dimensao(
-                "identificacao",
-                OK,
-                (
-                    f"A dúvida sobre o código não muda o imposto: {cod} ou {outros} têm o mesmo tratamento "
-                    f"(cClassTrib {av.cclasstrib}). Dúvida registrada: {dims['identificacao'].texto}"
-                )[:300],
+            mesmo = f"{cod} ou {outros} têm o mesmo tratamento (cClassTrib {av.cclasstrib})"
+            # Só dispensa a pessoa quando o NCM do ERP foi mantido, a descrição basta e a certeza é razoável.
+            # Criar ou trocar um NCM mexe no cadastro (e em outros impostos): isso sempre é confirmado.
+            seguro = (
+                idt.get("situacao") == "confirmado"
+                and idt.get("descricao_suficiente") is not False
+                and float(idt.get("confianca_modelo") or 0) >= 0.7
             )
+            if seguro:
+                dims["identificacao"] = Dimensao(
+                    "identificacao",
+                    OK,
+                    (
+                        f"A dúvida sobre o código não muda o imposto: {mesmo}. "
+                        f"Dúvida registrada: {dims['identificacao'].texto}"
+                    )[:300],
+                )
+            else:
+                dims["identificacao"] = Dimensao(
+                    "identificacao",
+                    ATENCAO,
+                    (
+                        f"{dims['identificacao'].texto} · O imposto seria o mesmo ({mesmo}), mas o NCM precisa "
+                        "de confirmação."
+                    )[:300],
+                )
 
     # --- a lei nomeia este produto com outro código? -------------------------------------------------
     if ent.produtos_na_lei and dims["codigo_fiscal"].situacao != FALHA:
