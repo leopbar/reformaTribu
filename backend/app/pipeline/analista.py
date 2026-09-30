@@ -13,11 +13,12 @@ import structlog
 from sqlalchemy import delete, func, insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from app.analise import aplicacao, evidencias, investigacao
+from app.analise import aplicacao, evidencias, investigacao, operacao
 from app.analise import fatos as fatos_mod
 from app.analise.avaliacao import avaliar
+from app.analise.dossie import rotulo_segmento
 from app.analise.identidade import consolidar
-from app.core.redis import redis_sync
+from app.core.redis import trava_viva
 from app.db.session import sync_tenant_session
 from app.embeddings import client as embeddings
 from app.events import bus
@@ -172,9 +173,7 @@ def investigar(state: ItemState, runtime: Rt) -> dict[str, Any]:
     if (tid := existente()) is not None:
         return {**saida, "tese_id": tid}
     # Um worker por família de cada vez: os demais esperam e reaproveitam a tese.
-    trava = redis_sync().lock(f"trava:tese:{ctx.org_id}:{chave}", timeout=900, blocking_timeout=900)
-    trava.acquire()
-    try:
+    with trava_viva(f"trava:tese:{ctx.org_id}:{chave}", espera_s=900):
         if (tid := existente()) is not None:
             return {**saida, "tese_id": tid}
         req = gateway.RequisicaoLLM(
@@ -232,47 +231,67 @@ def investigar(state: ItemState, runtime: Rt) -> dict[str, Any]:
                 .returning(TaxThesis.id)
             ).scalar_one()
         return {**saida, "tese_id": str(tid_novo), "llm_calls": [*state.llm_calls, str(res.call_id)]}
-    finally:
-        try:
-            trava.release()
-        except Exception:  # noqa: S110
-            pass
 
 
 # -------------------------------------------------------------------------- levantar fatos --
 def levantar_fatos(state: ItemState, runtime: Rt) -> dict[str, Any]:
-    """Fatos do item explícitos na descrição ou no ERP (modelo leve). Inferência não vira fato."""
+    """Fatos do item explícitos na descrição ou no ERP (modelo leve). Inferência não vira fato.
+
+    Pede os fatos da tese da família (se houver) e os dos regimes da operação ativos para a empresa
+    (ADR 0026), que valem mesmo para itens sem NCM definido."""
     ctx = runtime.context
-    if not state.tese_id or state.fatos_levantados:
+    if state.fatos_levantados:
         return {"fatos_levantados": True}
-    _etapa(ctx, state.item_id, "levantar_fatos")
     with sync_tenant_session(ctx.tenant) as s:
-        tese = s.get(TaxThesis, uuid.UUID(state.tese_id))
+        tese = s.get(TaxThesis, uuid.UUID(state.tese_id)) if state.tese_id else None
         item = s.get(AuditItem, uuid.UUID(state.item_id))
-        assert tese is not None and item is not None
+        assert item is not None
         empresa = s.get(Company, item.company_id)
         assert empresa is not None
-        familia = fatos_mod.grupo_familia(state.tipo_codigo_final or "ncm", state.codigo_final or "")
+        familia = (
+            fatos_mod.grupo_familia(state.tipo_codigo_final or "ncm", state.codigo_final)
+            if state.codigo_final
+            else None
+        )
         conhecidos = fatos_mod.resolver(
             s, empresa, item_chave=item.codigo_interno, categoria=item.categoria, familia=familia
         )
-        pedidos = [
-            f
-            for f in investigacao.fatos_item_necessarios(tese.resultado)
-            if fatos_mod.chave(f["fato"]) not in conhecidos
+        valores = {k: f.como_dict() for k, f in conhecidos.items()}
+        regimes = operacao.regimes_da_empresa(valores).regimes
+        implicitos = operacao.fatos_implicitos(regimes, valores, state.tipo_codigo_final, state.codigo_final)
+        candidatos = [
+            *operacao.fatos_necessarios(regimes),
+            *(investigacao.fatos_item_necessarios(tese.resultado) if tese is not None else []),
         ]
-        erp = {"categoria": item.categoria, "unidade": item.unidade}
+        pedidos: list[dict[str, Any]] = []
+        for f in candidatos:
+            k = fatos_mod.chave(f["fato"])
+            if k not in conhecidos and k not in implicitos and all(fatos_mod.chave(p["fato"]) != k for p in pedidos):
+                pedidos.append(f)
+        erp = {"categoria": item.categoria, "unidade": item.unidade, "tipo_no_erp": item.tipo_informado}
         dados_item = {
             "descricao_original": remover_marca(item.descricao, item.marca),
             "descricao_normalizada": state.descricao_normalizada,
             **{k: v for k, v in erp.items() if v},
         }
-        pacote = (tese.evidencias or {}).get("pacote") or {}
+        pacote = ((tese.evidencias if tese is not None else None) or {}).get("pacote") or {}
         identidade_item = {
             "codigo": state.codigo_final,
             "descricao_oficial": (pacote.get("codigo") or {}).get("descricao_oficial"),
         }
+        # O tipo de estabelecimento ajuda a ler a descrição ("ESPRESSO" num restaurante é bebida feita ali).
+        estabelecimento: dict[str, str | None] = {
+            "segmento": rotulo_segmento(empresa.segmento),
+            **{
+                k: valores[k]["valor"]
+                for k in ("fornece_refeicoes", "produz_alimentos", "manipula_medicamentos")
+                if k in valores
+            },
+        }
         org_id, company_id, codigo_interno = item.org_id, item.company_id, item.codigo_interno
+    if not pedidos:
+        return {"fatos_levantados": True}
+    _etapa(ctx, state.item_id, "levantar_fatos")
     if not pedidos:
         return {"fatos_levantados": True}
     prompt = carregar("extrair_fatos", ctx.prompts.get("extrair_fatos"))
@@ -283,6 +302,7 @@ def levantar_fatos(state: ItemState, runtime: Rt) -> dict[str, Any]:
         conteudo_usuario={
             "item": dados_item,
             "identidade": identidade_item,
+            "estabelecimento": estabelecimento,
             "fatos_pedidos": [
                 {
                     "fato": f["fato"],
@@ -297,7 +317,10 @@ def levantar_fatos(state: ItemState, runtime: Rt) -> dict[str, Any]:
         validador=FatosItem,
         esforco="low",
         chave_idempotencia=chave_conteudo(
-            "fatos", ctx.modelo_fatos, prompt.rotulo, {"t": state.tese_id, "i": dados_item, "p": pedidos}
+            "fatos",
+            ctx.modelo_fatos,
+            prompt.rotulo,
+            {"t": state.tese_id, "i": dados_item, "p": pedidos, "e": estabelecimento},
         ),
         org_id=ctx.org_id,
         audit_id=ctx.audit_id,

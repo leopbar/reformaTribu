@@ -13,6 +13,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.analise import fatos as fatos_mod
+from app.analise import operacao
 from app.analise.avaliacao import Avaliacao, EntradaAvaliacao, avaliar
 from app.core.codes import formatar_codigo
 from app.models import Audit, AuditItem, Company, OrgSettings, Pendencia, RefSnapshot, TaxProfile, TaxThesis
@@ -59,11 +60,19 @@ def entrada(
     )
     ev = (tese.evidencias if tese else None) or {}
     fatos = {k: f.como_dict() for k, f in resolvidos.items()}
+    # Regimes decididos pela operação (ADR 0026): ativados pelo dossiê, com a lei e o cClassTrib da base.
+    aplic = operacao.regimes_da_empresa(fatos)
+    snap = session.get(RefSnapshot, audit.snapshot_id) if audit.snapshot_id else None
+    mat = operacao.material(
+        session, aplic.regimes, (snap.versoes if snap else None) or {}, audit.data_referencia, idt.get("tipo_codigo")
+    )
+    # Fatos que a lei presume pelo perfil ou que o código determina; os gravados prevalecem.
+    fatos = {**operacao.fatos_implicitos(aplic.regimes, fatos, idt.get("tipo_codigo"), idt.get("codigo")), **fatos}
     return EntradaAvaliacao(
         identidade=idt,
         tese=tese.resultado if tese is not None and tese.status == "concluida" else None,
-        cclasstrib=ev.get("cclasstrib", {}),
-        refs=ev.get("refs", {}),
+        cclasstrib={**ev.get("cclasstrib", {}), **mat.cclasstrib},
+        refs={**ev.get("refs", {}), **mat.refs},
         fatos=fatos,
         correlacionados=ev.get("correlacionados", []),
         precedentes=ev.get("precedentes", []),
@@ -75,6 +84,9 @@ def entrada(
         tese_aprovada=bool(tese and tese.aprovada_em),
         tratamento_alternativas=tratamento_alternativas(session, item, audit, fatos),
         produtos_na_lei=_produtos_na_lei(session, item, audit),
+        operacao=operacao.fundamentar(operacao.hipoteses(aplic.regimes), mat),
+        operacao_fatos=operacao.fatos_necessarios(aplic.regimes),
+        operacao_afastada=[f"{r.titulo}: {motivo}" for r, motivo in aplic.afastados],
     )
 
 
@@ -137,6 +149,11 @@ def tratamento_do_codigo(
             return None
         return f"{h['cclasstrib']}|{'sujeito' if situacao == 'sujeito' else 'nao_sujeito'}"
     # Sem parecer: se nem a correlação oficial nem nenhum anexo da lei citam o código, vale a regra geral.
+    # Um benefício pela natureza do produto (medicamento, in natura, livro…) também impede essa conclusão.
+    from app.analise.natureza import ligacoes
+
+    if ligacoes(tipo, codigo):
+        return None
     pref = prefixos(codigo)
     v_cct, v_lc = versoes.get("cclasstrib"), versoes.get("lc214")
     if not v_cct or not v_lc:
@@ -192,9 +209,9 @@ def _registrar_perguntas(session: Session, item: AuditItem, av: Avaliacao) -> li
                     "item_ids": text(
                         "(SELECT array_agg(DISTINCT x) FROM unnest(pendencias.item_ids || excluded.item_ids) x)"
                     ),
-                    "status": text(
-                        "CASE WHEN pendencias.status = 'respondida' THEN pendencias.status ELSE 'aberta' END"
-                    ),
+                    # A resposta anterior valeu só para os itens que estavam na pergunta: um item que
+                    # chega agora precisa dela, então a pergunta reabre (ADR 0026).
+                    "status": "aberta",
                     "updated_at": datetime.now(UTC),
                 },
             )
@@ -366,15 +383,18 @@ def versionar_perfil(session: Session, item: AuditItem, audit: Audit, *, registr
 def reavaliar(session: Session, item_id: uuid.UUID, motivo: str) -> bool:
     """Reavalia um item com os fatos atuais, sem IA. Devolve True se reavaliou."""
     item = session.get(AuditItem, item_id)
-    if item is None or item.thesis_id is None:
+    if item is None or not item.identidade:
         return False
     if item.revisao_status == StatusRevisao.APROVADO and not item.aprovado_automaticamente:
         return False  # decisão humana prevalece; desfaça a aprovação para reavaliar
     audit = session.get(Audit, item.audit_id)
-    tese = session.get(TaxThesis, item.thesis_id)
-    if audit is None or tese is None:
+    tese = session.get(TaxThesis, item.thesis_id) if item.thesis_id else None
+    if audit is None or (item.thesis_id is not None and tese is None):
         return False
-    av = avaliar(entrada(session, item, audit, tese))
+    ent = entrada(session, item, audit, tese)
+    if tese is None and not ent.operacao:
+        return False  # sem tese e sem regime da operação não há o que reavaliar sem IA
+    av = avaliar(ent)
     motivos_id = [m for m in item.motivos or [] if m not in av.motivos and m not in _MOTIVOS_DA_AVALIACAO]
     aplicar(session, item, audit, av, tese, motivos_identidade=motivos_id, motivo_versao=motivo)
     return True

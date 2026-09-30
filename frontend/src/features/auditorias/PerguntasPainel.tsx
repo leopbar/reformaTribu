@@ -31,7 +31,7 @@ export function useResponder(auditId: string, aoConcluir?: () => void) {
   });
 }
 
-/** Perguntas decisivas do analista, agrupadas: uma resposta vale para o grupo inteiro. */
+/** Perguntas decisivas do analista, agrupadas: uma resposta vale para os itens listados na pergunta. */
 export function PerguntasPainel({ auditId }: { auditId: string }) {
   const [verRespondidas, setVerRespondidas] = useState(false);
   const q = usePendencias(auditId, verRespondidas ? "respondida" : "aberta");
@@ -42,9 +42,10 @@ export function PerguntasPainel({ auditId }: { auditId: string }) {
     <div className="grid gap-4">
       <div className="flex flex-wrap items-center gap-3">
         <p className="max-w-3xl text-sm text-tinta-2">
-          O analista só pergunta o que <strong>muda o enquadramento</strong>. Cada pergunta é feita para o grupo mais amplo
-          possível (a empresa, uma categoria do ERP ou um NCM). Responda uma vez para todos; se variar, responda item a item.
-          Os itens são reclassificados na hora, sem novo custo de IA.
+          O analista só pergunta o que <strong>muda o enquadramento</strong>. Cada pergunta junta os itens em que a mesma
+          resposta costuma valer (a empresa, uma categoria do ERP ou um NCM). A resposta vale <strong>só para os itens
+          listados</strong>; um item que chegar depois recebe a pergunta de novo. Se variar, responda item a item. Os itens
+          são reclassificados na hora, sem novo custo de IA.
         </p>
         <Button variant="fantasma" tamanho="sm" className="ml-auto" onClick={() => setVerRespondidas((v) => !v)}>
           {verRespondidas ? "Ver perguntas abertas" : "Ver perguntas respondidas"}
@@ -86,6 +87,26 @@ function CartaoPergunta({ p, auditId }: { p: Pendencia; auditId: string }) {
   const sugestoes = p.itens.filter((i) => i.sugestao);
   const podeResponder = pode("responder") && aberta;
   const faltam = p.total_itens - itens.length;
+  const [buscando, setBuscando] = useState(false);
+
+  // Confirma de uma vez as suposições da IA (cada item com a sua); itens sem suposição continuam abertos.
+  async function confirmarSugestoes() {
+    setBuscando(true);
+    try {
+      const todos =
+        completa.data?.itens ??
+        (p.total_itens > p.itens.length
+          ? (await ok(api.GET("/api/pendencias/{pendencia_id}", { params: { path: { pendencia_id: p.id } } }))).itens
+          : p.itens);
+      const respostasSugeridas: Record<string, string> = {};
+      for (const i of todos) if (i.sugestao?.valor) respostasSugeridas[i.id] = i.sugestao.valor;
+      if (Object.keys(respostasSugeridas).length) responder.mutate({ id: p.id, respostas_itens: respostasSugeridas, observacao: obs || "suposições da IA conferidas e confirmadas" });
+    } catch (e) {
+      toast.error(mensagemErro(e));
+    } finally {
+      setBuscando(false);
+    }
+  }
 
   return (
     <Painel className="p-5">
@@ -118,7 +139,12 @@ function CartaoPergunta({ p, auditId }: { p: Pendencia; auditId: string }) {
       {sugestoes.length ? (
         <p className="mt-3 flex items-start gap-1.5 pl-7 text-xs text-caneta">
           <Lightbulb className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-          A IA supõe uma resposta para {plural(sugestoes.length, "item", "itens")}, mas suposição não vira fato: confirme abaixo.
+          A IA supõe uma resposta para {plural(sugestoes.length, "item", "itens")}, mas suposição não vira fato: confira os itens e confirme.
+          {podeResponder ? (
+            <Button variant="fantasma" tamanho="sm" className="ml-1 h-auto px-1.5 py-0.5 text-xs" disabled={responder.isPending || buscando} onClick={() => void confirmarSugestoes()}>
+              Confirmar as suposições
+            </Button>
+          ) : null}
         </p>
       ) : null}
 

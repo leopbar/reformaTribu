@@ -102,9 +102,85 @@ def _sem_acento(t: str) -> str:
     return unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().lower()
 
 
+# Palavras que só falam de embalagem, forma de apresentação ou quantidade: não dizem o que o produto É.
+_SO_EMBALAGEM = {
+    "pack",
+    "kit",
+    "combo",
+    "cx",
+    "caixa",
+    "caixinha",
+    "lata",
+    "garrafa",
+    "pet",
+    "frasco",
+    "blister",
+    "envelope",
+    "sache",
+    "sachet",
+    "refil",
+    "display",
+    "pacote",
+    "pct",
+    "emb",
+    "embalagem",
+    "un",
+    "und",
+    "unid",
+    "unidade",
+    "unidades",
+    "pc",
+    "pcs",
+    "peca",
+    "pecas",
+    "comp",
+    "comprimido",
+    "comprimidos",
+    "cpr",
+    "caps",
+    "capsula",
+    "capsulas",
+    "dragea",
+    "drageas",
+    "gotas",
+    "xarope",
+    "ampola",
+    "ampolas",
+    "tubo",
+    "pote",
+    "dia",
+    "noite",
+    "c",
+    "com",
+    "de",
+    "x",
+    "long",
+    "neck",
+    "mini",
+    "grande",
+    "pequeno",
+    "medio",
+    "tradicional",
+    "original",
+}
+_QUANTIDADE = re.compile(r"^\d+([.,]\d+)?(ml|mg|mcg|g|kg|l|lt|un|und|cps|cpr|caps|comp|cm|mm|m)?$")
+
+
+def _so_embalagem(palavras: list[str]) -> bool:
+    for w in palavras:
+        for t in re.findall(r"[a-z0-9.,]+", _sem_acento(w)):
+            if t not in _SO_EMBALAGEM and not _QUANTIDADE.match(t):
+                return False
+    return True
+
+
 def remover_marca(texto: str, marca: str | None) -> str:
     """Tira a marca comercial da descrição: marca não define NCM, e itens iguais de marcas diferentes
-    passam a ter a mesma análise (uma única chamada de IA para todos)."""
+    passam a ter a mesma análise (uma única chamada de IA para todos).
+
+    Exceção: quando a marca é o próprio nome do produto (remédio, refrigerante: "NALDECON PACK", "DORFLEX 36
+    COMPRIMIDOS"), o que sobra sem ela só fala de embalagem ou quantidade. Aí a marca fica: sem ela, não
+    haveria o que identificar, e produtos diferentes da mesma embalagem virariam "o mesmo item"."""
     alvo = re.findall(r"[a-z0-9]+", _sem_acento(marca or ""))
     if not alvo or " ".join(alvo) in ("sem marca", "diversos", "producao propria", "marca propria"):
         return texto
@@ -114,5 +190,7 @@ def remover_marca(texto: str, marca: str | None) -> str:
     for i in range(len(base) - n + 1):
         if base[i : i + n] == alvo:
             restante = palavras[:i] + palavras[i + n :]
-            return " ".join(restante) or texto
+            if not restante or _so_embalagem(restante):
+                return texto
+            return " ".join(restante)
     return texto

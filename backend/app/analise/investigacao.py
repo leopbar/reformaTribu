@@ -16,6 +16,7 @@ import orjson
 
 from app.analise.evidencias import CCLASSTRIB_REGRA_GERAL, Evidencias
 from app.analise.fatos import chave
+from app.analise.operacao import regimes_da_empresa
 
 CENARIOS = {"venda_consumidor": "Venda comum de mercadoria ou serviço ao consumidor final (NFC-e/NF-e/NFS-e)."}
 
@@ -61,11 +62,21 @@ def chave_familia(
 
 
 def conteudo(ev: Evidencias, dossie: dict[str, str], cenario: str) -> dict[str, Any]:
-    return {
+    saida = {
         **ev.pacote,
         "empresa": dossie,
         "cenario": {"codigo": cenario, "descricao": CENARIOS.get(cenario, cenario)},
     }
+    regimes = regimes_da_empresa(dossie).regimes
+    if regimes:
+        # Fora da chave da tese: é instrução, não material jurídico.
+        saida["regimes_da_operacao_tratados_a_parte"] = [
+            f"{r.titulo} (cClassTrib {r.cclasstrib}): decidido por outra etapa, item a item, conforme o preparo "
+            "e a natureza do item. Estude aqui só o tratamento do PRODUTO vendido como mercadoria; não crie "
+            "hipóteses nem perguntas sobre este regime."
+            for r in regimes
+        ]
+    return saida
 
 
 def validar(dados: dict[str, Any], ev: Evidencias) -> tuple[dict[str, Any], dict[str, Any]]:

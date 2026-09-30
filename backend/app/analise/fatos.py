@@ -27,6 +27,7 @@ ROTULOS_ORIGEM: dict[str, str] = {
     OrigemFato.ERP: "planilha do ERP",
     OrigemFato.DESCRICAO: "explícito na descrição",
     OrigemFato.CADASTRO: "cadastro da empresa",
+    OrigemFato.CODIGO: "pelo NCM do item",
 }
 
 

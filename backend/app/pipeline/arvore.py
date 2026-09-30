@@ -30,6 +30,7 @@ log = structlog.get_logger()
 # Com até este número de códigos finais sob o nível escolhido, pula direto para eles.
 MAX_FOLHAS_DIRETAS = 60
 MAX_OPCOES = 150
+MAX_CAPITULOS = 3  # capítulos tentados quando o anterior não tem código que sirva
 
 
 def _tabela(fonte: str) -> str:
@@ -184,8 +185,9 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
     primeira = perguntar("capitulo", raizes)
     if primeira is not None and primeira.escolha is not None:
         por_raiz = {o["codigo"]: o for o in raizes}
-        # Se o capítulo escolhido não tiver código que sirva, tenta o capítulo alternativo mais provável.
-        tentativas = [primeira.escolha, *(a.codigo for a in primeira.alternativas)][:2]
+        # Se o capítulo escolhido não tiver código que sirva, tenta os alternativos, do mais provável ao
+        # menos (até 3 no total: ex. café espresso → 22 bebidas, 09 café em grão, 21 preparações).
+        tentativas = [primeira.escolha, *(a.codigo for a in primeira.alternativas)][:MAX_CAPITULOS]
         for n, cap in enumerate(tentativas):
             inicio = len(passos)
             if n > 0:
@@ -194,7 +196,7 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
                         "nivel": "capitulo",
                         "escolha": cap,
                         "confianca": primeira.confianca,
-                        "justificativa": "Segundo capítulo tentado: no primeiro, nenhum código serviu.",
+                        "justificativa": f"{n + 1}º capítulo tentado: nos anteriores, nenhum código serviu.",
                     }
                 )
             codigo, alternativas_folhas = descer(por_raiz[cap])

@@ -36,6 +36,10 @@ NCM = {
     "3808": "Inseticidas, desinfetantes e produtos semelhantes",
     "380894": "Desinfetantes",
     "38089419": "Desinfetantes para uso domissanitário, outros",
+    "30": "Produtos farmacêuticos",
+    "3004": "Medicamentos acondicionados para venda a retalho",
+    "300490": "Outros",
+    "30049036": "Cloridrato de fenilefrina; mirtecaína; propranolol ou seus sais",
 }
 
 
@@ -60,6 +64,7 @@ class FakeClaude:
 
     def __init__(self) -> None:
         self.chamadas: list[str] = []
+        self.pacotes: dict[str, dict[str, Any]] = {}  # o que o Jurista recebeu, por código
         self.messages = self
 
     def create(self, **params: Any) -> FakeMensagem:
@@ -116,6 +121,10 @@ class FakeClaude:
             r = {**base, "ncm_atual_coerente": False, "codigo_sugerido": "34013000", "confianca": 0.94}
         elif "BARRA" in desc:
             r = {**base, "ncm_atual_coerente": True, "codigo_sugerido": "34011190", "confianca": 0.97}
+        elif "NALDECON" in desc:
+            # A marca é o nome do produto: ela precisa chegar ao modelo, com o tipo do ERP.
+            assert conteudo["item"]["informacoes_adicionais"].get("tipo_no_erp") == "medicamento para revenda"
+            r = {**base, "ncm_atual_coerente": True, "codigo_sugerido": "30049036", "confianca": 0.95}
         elif "SUCO" in desc:
             r = {**base, "ncm_atual_coerente": True, "codigo_sugerido": "20096100", "confianca": 0.96}
         else:  # sugere um código fora da lista: deve ser descartado
@@ -162,7 +171,46 @@ class FakeClaude:
         }
         hipoteses: list[dict[str, Any]] = [geral]
         fatos: list[dict[str, Any]] = []
-        if codigo == "34011190":
+        self.pacotes[codigo] = c
+        if codigo == "30049036":
+            lei = {
+                x["cclasstrib"]: x["ref"]
+                for x in c["correlacoes_oficiais"]
+                if str(x.get("fonte", "")).startswith("lei")
+            }
+            hipoteses = [
+                {
+                    "id": "H1",
+                    "titulo": "Alíquota zero — lista do art. 146",
+                    "tipo": "beneficio",
+                    "cclasstrib": "200009",
+                    "condicoes": [{"fato": "lista_aliquota_zero", "valor_exigido": "sim", "explicacao": ""}],
+                    "excecoes": [],
+                    "fundamentos": [{"ref": lei.get("200009", "C999"), "trecho": "art. 146"}],
+                    "explicacao": "",
+                },
+                {
+                    "id": "H2",
+                    "titulo": "Medicamento registrado na Anvisa (redução de 60%)",
+                    "tipo": "beneficio",
+                    "cclasstrib": "200032",
+                    "condicoes": [],
+                    "excecoes": [],
+                    "fundamentos": [{"ref": lei.get("200032", "C999"), "trecho": "art. 133"}],
+                    "explicacao": "",
+                },
+                geral,
+            ]
+            fatos = [
+                {
+                    "fato": "lista_aliquota_zero",
+                    "escopo": "item",
+                    "pergunta": "O medicamento está na lista de alíquota zero?",
+                    "opcoes": ["sim", "nao"],
+                    "como_identificar_na_descricao": "",
+                }
+            ]
+        elif codigo == "34011190":
             hipoteses = [
                 {
                     "id": "H1",
@@ -212,7 +260,12 @@ class FakeClaude:
         desc = c["item"]["descricao_original"]
         saida = []
         for f in c["fatos_pedidos"]:
-            if "INTEGRAL" in desc:
+            if f["fato"] == "preparado_no_estabelecimento" and ("ESPRESSO" in desc or "LATA" in desc):
+                v, ev = ("sim", "ESPRESSO") if "ESPRESSO" in desc else ("nao", "LATA")
+                saida.append({"fato": f["fato"], "valor": v, "base": "explicito", "evidencia": ev})
+            elif f["fato"] == "bebida_alcoolica" and "CAFE" in desc:
+                saida.append({"fato": f["fato"], "valor": "nao", "base": "explicito", "evidencia": "CAFE"})
+            elif "INTEGRAL" in desc:
                 saida.append({"fato": f["fato"], "valor": "nao", "base": "explicito", "evidencia": "INTEGRAL"})
             else:
                 saida.append({"fato": f["fato"], "valor": "nao", "base": "inferencia", "evidencia": "suco comum"})
@@ -288,6 +341,9 @@ def ambiente(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             ("000001", "000", "Situações tributadas integralmente pelo IBS e CBS.", None),
             ("200035", "200", "Fornecimento dos produtos de higiene pessoal do Anexo VIII", 8),
             ("200034", "200", "Fornecimento dos alimentos do Anexo VII", 7),
+            ("200047", "200", "Bares e Restaurantes, observado o art. 275", None),
+            ("200009", "200", "Medicamentos registrados na Anvisa, observado o art. 146", None),
+            ("200032", "200", "Medicamentos registrados na Anvisa, observado o art. 133", None),
         ):
             s.add(
                 CClassTribCode(
@@ -337,6 +393,16 @@ def ambiente(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
                     titulo_anexo="PRODUTOS DE HIGIENE PESSOAL E LIMPEZA",
                     texto="Água sanitária classificada no código 3808.94.19 da NCM/SH",
                     codigos_citados=["38089419"],
+                ),
+                *(
+                    LegalProvision(
+                        version_id=v_lc.id,
+                        tipo="artigo",
+                        artigo=art,
+                        texto=f"Art. {art}. Texto de teste do regime de bares e restaurantes.",
+                        codigos_citados=[],
+                    )
+                    for art in ("273", "274", "275", "133", "146")
                 ),
                 LegalProvision(
                     version_id=v_lc.id,
@@ -418,7 +484,29 @@ def ambiente(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
                 ids.append(i.id)
         return aid, ids
 
-    return {"org_id": org_id, "emp_id": emp_id, "fake": fake, "nova_auditoria": nova_auditoria}
+    def virar_restaurante() -> None:
+        from app.analise import fatos as fatos_mod
+        from app.models.enums import EscopoFato, OrigemFato
+
+        with sync_tenant_session(TenantContext.sistema(org_id)) as s:
+            s.get(Company, emp_id).segmento = "restaurante"
+            fatos_mod.registrar(
+                s,
+                org_id=org_id,
+                company_id=emp_id,
+                escopo=EscopoFato.EMPRESA,
+                atributo="fornece_refeicoes",
+                valor_="sim",
+                origem=OrigemFato.USUARIO,
+            )
+
+    return {
+        "org_id": org_id,
+        "emp_id": emp_id,
+        "fake": fake,
+        "nova_auditoria": nova_auditoria,
+        "virar_restaurante": virar_restaurante,
+    }
 
 
 def _item(org_id: uuid.UUID, item_id: uuid.UUID) -> Any:
@@ -499,7 +587,7 @@ def test_analista_completo_tempo_real(ambiente: dict[str, Any]) -> None:
         pid = p.id
         assert s.scalar(select(func.count()).select_from(CompanyFact).where(CompanyFact.origem == "descricao")) == 1
 
-    # Resposta à pergunta: vira fato do grupo e o item é reavaliado sem nova chamada de IA.
+    # Resposta à pergunta: vira fato de cada item listado e o item é reavaliado sem nova chamada de IA.
     chamadas = len(fake.chamadas)
     with sync_tenant_session(TenantContext.sistema(org)) as s:
         autor = pendencias.Autor(uuid.uuid4(), "operador@teste.com.br")
@@ -695,3 +783,81 @@ def test_codigo_citado_na_lei_entra_na_prova_e_a_troca_vai_ao_contador(ambiente:
     # A troca motivada pela lei nunca é aprovada sozinha.
     assert i.status == "revisao_contador"
     assert i.dimensoes["codigo_fiscal"]["situacao"] == "atencao"
+
+
+def test_resposta_em_grupo_vale_so_para_os_itens_listados(ambiente: dict[str, Any]) -> None:
+    """Um item da mesma família que chega depois recebe a pergunta de novo (ADR 0026)."""
+    from app.analise import pendencias
+    from app.analise.aplicacao import reavaliar
+    from app.audits.processing import processar_itens
+    from app.db.session import TenantContext, sync_tenant_session
+    from app.models import CompanyFact, Pendencia
+
+    org = ambiente["org_id"]
+    aid, (suco,) = ambiente["nova_auditoria"]([("SUCO UVA 1L", "20096100")])
+    processar_itens(aid, org, [suco])
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        p = s.scalar(select(Pendencia).where(Pendencia.audit_id == aid))
+        afetados = pendencias.responder(s, p.id, pendencias.Autor(uuid.uuid4(), "op@teste.com.br"), valor="nao")
+        for i in afetados:
+            reavaliar(s, i, "resposta")
+        fatos = list(s.scalars(select(CompanyFact).where(CompanyFact.atributo == "adicao_acucar")))
+        assert [(f.escopo, f.item_chave) for f in fatos] == [("item", _item(org, suco).codigo_interno)]
+    assert _item(org, suco).cclasstrib_sugerido == "200034"
+
+    aid2, (outro,) = ambiente["nova_auditoria"]([("SUCO UVA 500ML", "20096100")])
+    processar_itens(aid2, org, [outro])
+    o = _item(org, outro)
+    assert o.status == "aguardando_informacao" and o.perguntas[0]["atributo"] == "adicao_acucar"
+
+
+def test_restaurante_espresso_sem_ncm_sai_pelo_regime_da_operacao(ambiente: dict[str, Any]) -> None:
+    """O caso que motivou a ADR 0026: nem a prova nem a árvore acham o NCM, e o cClassTrib sai assim mesmo."""
+    from app.audits.processing import processar_itens
+
+    org, fake = ambiente["org_id"], ambiente["fake"]
+    ambiente["virar_restaurante"]()
+    aid, (cafe, lata) = ambiente["nova_auditoria"](
+        [("CAFE ESPRESSO 50ML", None), ("REFRIGERANTE COLA LATA 350ML", "22021000")]
+    )
+    processar_itens(aid, org, [cafe, lata])
+
+    c = _item(org, cafe)
+    assert c.identidade["situacao"] == "indefinido"
+    assert (c.cclasstrib_sugerido, c.cst_sugerido, c.hipotese) == ("200047", "200", "OP-restaurante")
+    assert c.dimensoes["codigo_fiscal"]["situacao"] == "atencao"
+    assert c.status == "revisao_contador"  # o NCM da nota ainda precisa ser definido por alguém
+    assert {f["atributo"]: f["origem"] for f in c.fatos_usados} == {
+        "preparado_no_estabelecimento": "descricao",
+        "servido_como_alimentacao": "cadastro",
+        "bebida_alcoolica": "descricao",
+    }
+    assert "fatos:CAFE ESPRESSO 50ML" in fake.chamadas
+
+    r = _item(org, lata)
+    # Comprado pronto e só revendido: fora do regime do restaurante (art. 273, § 2º, II).
+    assert r.cclasstrib_sugerido == "000001"
+
+
+def test_farmacia_naldecon_recebe_os_codigos_de_medicamento_pela_lei(ambiente: dict[str, Any]) -> None:
+    """Simulação do ADR 0027: a tabela oficial não liga 3004.90.36 aos cClassTrib de medicamento humano."""
+    from app.audits.processing import processar_itens
+    from app.db.session import TenantContext, sync_tenant_session
+    from app.models import AuditItem
+
+    org, fake = ambiente["org_id"], ambiente["fake"]
+    aid, (item,) = ambiente["nova_auditoria"]([("NALDECON PACK", "30049036")], marcas=["Naldecon"])
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        s.get(AuditItem, item).tipo_informado = "medicamento para revenda"
+    processar_itens(aid, org, [item])
+
+    pacote = fake.pacotes["30049036"]
+    candidatos = {c["codigo"] for c in pacote["cclasstrib_candidatos"]}
+    assert {"200009", "200032"} <= candidatos
+    assert any(t["local"] == "Art. 133" for t in pacote["trechos_normativos"])
+    i = _item(org, item)
+    assert i.descricao_normalizada.upper().startswith("NALDECON")  # a marca é o produto: ficou
+    # Falta saber se está na lista de alíquota zero; se não estiver, 60% (200032) — nunca a integral.
+    assert i.status == "aguardando_informacao"
+    efeitos = {o["valor"]: o["efeito"] for o in i.perguntas[0]["opcoes"]}
+    assert "200009" in efeitos["sim"] and "200032" in efeitos["nao"]

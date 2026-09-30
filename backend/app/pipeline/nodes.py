@@ -392,7 +392,16 @@ def _conteudo(state: ItemState, ctx: Contexto) -> dict[str, Any]:
     with sync_tenant_session(ctx.tenant) as s:
         item = s.get(AuditItem, uuid.UUID(state.item_id))
         assert item is not None
-        adicionais = {k: v for k, v in {"unidade": item.unidade, "categoria": item.categoria}.items() if v}
+        # O tipo escrito no ERP ("medicamento para revenda") diz o que o item é e como é vendido.
+        adicionais = {
+            k: v
+            for k, v in {
+                "unidade": item.unidade,
+                "categoria": item.categoria,
+                "tipo_no_erp": item.tipo_informado,
+            }.items()
+            if v
+        }
         marca = item.marca
     atual = (state.estrutura or {}).get("codigo_atual")
     codigo_atual: dict[str, Any] | None = None
@@ -435,11 +444,9 @@ def _executar(req: gateway.RequisicaoLLM, ctx: Contexto) -> gateway.ResultadoLLM
     """Tempo real: chama a API. Lote: enfileira e interrompe o grafo até o resultado chegar.
 
     A chave é pelo conteúdo: uma trava garante que itens idênticos façam uma única chamada."""
-    from app.core.redis import redis_sync
+    from app.core.redis import trava_viva
 
-    trava = redis_sync().lock(f"trava:llm:{req.chave_idempotencia}", timeout=600, blocking_timeout=600)
-    trava.acquire()
-    try:
+    with trava_viva(f"trava:llm:{req.chave_idempotencia}", espera_s=600):
         # Lote só existe para modelos com Batch API (Anthropic); os demais saem em tempo real.
         if ctx.modo != "lote" or not gateway.suporta_lote(req.modelo):
             return gateway.chamar_tempo_real(req)
@@ -449,11 +456,6 @@ def _executar(req: gateway.RequisicaoLLM, ctx: Contexto) -> gateway.ResultadoLLM
         if isinstance(existente, LlmCall) and existente.status == "falhou":
             raise gateway.FalhaIA(existente.erro or "A requisição em lote falhou.")
         gateway.enfileirar_lote(req)
-    finally:
-        try:
-            trava.release()
-        except Exception:  # noqa: S110
-            pass
     interrupt({"aguardando": "lote", "chave": req.chave_idempotencia})
     # Retomado pela tarefa coletora: o resultado já está gravado.
     existente = gateway.resultado_existente(req)

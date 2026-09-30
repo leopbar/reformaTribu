@@ -2,7 +2,8 @@
 
 As "ferramentas" do agente são consultas determinísticas feitas aqui, antes da chamada ao modelo:
 - identidade oficial do código (descrição hierárquica);
-- correlação oficial cClassTrib × NCM/NBS (tabela do Portal da Conformidade Fácil);
+- correlação oficial cClassTrib × NCM/NBS (tabela do Portal da Conformidade Fácil), completada pelas
+  ligações que a lei faz pela natureza do produto (`natureza.py`: medicamentos, in natura, livros…);
 - trechos da LC 214/2025 que citam o código (itens de anexos) e artigos relevantes;
 - artigos dos demais atos da base normativa (EC 132/2023, LC 227/2026, Decreto 12.955/2026);
 - entradas da tabela cClassTrib candidatas (lista fechada: o modelo só escolhe entre elas);
@@ -24,7 +25,8 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import bindparam, select, text
 from sqlalchemy.orm import Session
 
-from app.analise import transicao
+from app.analise import natureza, transicao
+from app.analise.operacao import cclasstrib_da_operacao
 from app.core.codes import formatar_codigo
 from app.models import CClassTribCode, CClassTribCorrelacao, LegalRule
 from app.models.enums import StatusRegra
@@ -126,6 +128,27 @@ def montar(
         pac_corr.append(item)
         ev.refs[ref] = {"tipo": "correlacao", "id": corr.id, **item}
         ev.correlacionados.add(corr.cclasstrib)
+    # Benefícios que a lei dá pela natureza do produto, sem lista de NCM (medicamentos, in natura, livros…):
+    # a tabela oficial não os correlaciona a nenhum código, e sem esta linha o Jurista não os veria (ADR 0027).
+    for lg in natureza.ligacoes(tipo_codigo, codigo):
+        ref = f"C{len(pac_corr) + 1}"
+        item = {
+            "ref": ref,
+            "cclasstrib": lg.cclasstrib,
+            "fonte": f"lei ({lg.norma}, art. {lg.artigo}): a tabela oficial não correlaciona este cClassTrib a "
+            "códigos, porque a lei o concede pela natureza do produto",
+            "anexo": None,
+            "item_anexo": None,
+            "descricao_item_anexo": lg.natureza,
+            "codigo_citado": formatar_codigo(tipo_codigo, codigo),
+            "permissao": "PERMITIDO",
+            "condicao": lg.condicao,
+            "excecao": lg.excecao or None,
+            "observacao": lg.observacao or None,
+        }
+        pac_corr.append(item)
+        ev.refs[ref] = {"tipo": "correlacao", "id": None, **item}
+        ev.correlacionados.add(lg.cclasstrib)
     ev.pacote["correlacoes_oficiais"] = pac_corr
 
     # --- trechos normativos ---------------------------------------------------------------------
@@ -182,10 +205,10 @@ def montar(
     for c in cct_rows:
         if c.codigo == CCLASSTRIB_REGRA_GERAL or c.codigo in ev.correlacionados or (c.nro_anexo in num_anexos):
             candidatos[c.codigo] = c
-    if fatos_empresa.get("fornece_refeicoes") == "sim":
-        for c in cct_rows:
-            if "Bares e Restaurantes" in c.nome:
-                candidatos[c.codigo] = c
+    # Regimes que dependem da operação (bares e restaurantes, manipulação) não entram na tese do produto:
+    # são decididos pelo catálogo de `operacao.py`, igual para todos os itens (ADR 0026).
+    for cod in cclasstrib_da_operacao():
+        candidatos.pop(cod, None)
     # Artigos citados pelos cClassTrib candidatos entram nos trechos (fundamento do próprio código).
     arts_cct = {m.group(1) for c in candidatos.values() for m in _ART.finditer(c.nome or "")}
     if v_lc and arts_cct:

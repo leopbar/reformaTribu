@@ -31,7 +31,8 @@ def responder(
     respostas_itens: dict[uuid.UUID, str] | None = None,
     observacao: str | None = None,
 ) -> list[uuid.UUID]:
-    """Registra a resposta. `valor` vale para o grupo todo; `respostas_itens` são exceções por item.
+    """Registra a resposta. `valor` vale para os itens listados na pergunta (ou para a empresa, se a
+    pergunta for do dossiê); `respostas_itens` são exceções por item.
 
     Devolve os itens a reavaliar.
     """
@@ -61,16 +62,20 @@ def responder(
     if valor is not None and fatos_mod.valor(valor) != "desconhecido":
         if p.escopo == EscopoFato.EMPRESA:
             fatos_mod.registrar(session, escopo=EscopoFato.EMPRESA, valor_=valor, **comum)
-        elif p.escopo == EscopoFato.GRUPO:
-            fatos_mod.registrar(session, escopo=EscopoFato.GRUPO, grupo_chave=p.grupo_chave, valor_=valor, **comum)
         else:
-            fatos_mod.registrar(
-                session,
-                escopo=EscopoFato.ITEM,
-                item_chave=p.grupo_chave.removeprefix("item:"),
-                valor_=valor,
-                **comum,
-            )
+            # A resposta vale para os itens listados na pergunta, nem mais nem menos (ADR 0026): um item
+            # da mesma categoria que chegar depois recebe a pergunta de novo, em vez de herdar em silêncio
+            # uma resposta dada pensando em outros produtos.
+            excecoes = {str(i) for i in (respostas_itens or {})}
+            chaves = [
+                i.codigo_interno
+                for i in session.scalars(select(AuditItem).where(AuditItem.id.in_(list(p.item_ids))))
+                if i.audit_id == p.audit_id and str(i.id) not in excecoes
+            ]
+            if p.escopo == EscopoFato.ITEM and p.grupo_chave.startswith("item:"):
+                chaves.append(p.grupo_chave.removeprefix("item:"))
+            for chave_item in dict.fromkeys(chaves):
+                fatos_mod.registrar(session, escopo=EscopoFato.ITEM, item_chave=chave_item, valor_=valor, **comum)
     itens_resp: dict[str, str] = {}
     if respostas_itens:
         itens = {

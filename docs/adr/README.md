@@ -37,6 +37,8 @@ Uma decisão revista não é apagada: a ADR antiga recebe um aviso apontando par
 | [0023](0023-robustez-das-chamadas-de-ia.md) | Robustez das chamadas de IA entre plataformas | aceito |
 | [0024](0024-execucao-paralela-e-recuperacao.md) | Execução em pacotes, paralelismo e recuperação de itens travados | aceito, melhorias pendentes |
 | [0025](0025-reanalise-acompanhada-ao-vivo.md) | Reanálise acompanhada ao vivo: faixa, ações bloqueadas, lista e caminho sem F5 | aceito |
+| [0026](0026-regimes-decididos-pela-operacao.md) | Regimes decididos pela operação (bares e restaurantes, manipulação), valem sem NCM; resposta em grupo só para os itens listados | aceito |
+| [0027](0027-beneficios-pela-natureza-do-produto.md) | Benefícios pela natureza do produto sem lista de NCM (medicamentos, in natura, livros); marca que é o produto fica; tipo do ERP | aceito |
 
 ## Mapa rápido: os agentes e as ADRs
 
@@ -44,11 +46,11 @@ Uma decisão revista não é apagada: a ADR antiga recebe um aviso apontando par
 |---|---|---|
 | Recepcionista, Conferente, Orçamentista, Distribuidor | não | 0013, 0022, 0024 |
 | Arrumador, Fiscal da tabela, Arquivista | não (Arrumador opcional) | 0013, 0022 |
-| Pesquisador (monta a prova) | não | 0003, 0017, 0020 |
+| Pesquisador (monta a prova) | não | 0003, 0017, 0020, 0027 |
 | Identificador | sim | 0013, 0014, 0019, 0020 |
 | Segundo parecer | sim, só com alarme | 0013, 0014, 0019 |
 | Navegador da NCM | sim, só sem código | 0017 |
-| Jurista (tese da família) | sim, uma vez por família | 0013, 0015, 0018 |
-| Leitor de fatos | sim | 0013, 0023 |
-| Juiz (boletim de 10 notas) | não | 0013, 0018, 0019, 0020 |
-| Secretário (perguntas) | não | 0013, 0021 |
+| Jurista (tese da família) | sim, uma vez por família | 0013, 0015, 0018, 0026, 0027 |
+| Leitor de fatos | sim | 0013, 0023, 0026 |
+| Juiz (boletim de 10 notas) | não | 0013, 0018, 0019, 0020, 0026 |
+| Secretário (perguntas) | não | 0013, 0021, 0026 |

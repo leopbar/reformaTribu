@@ -140,6 +140,7 @@ class OrigemFato(StrEnum):
     ERP = "erp"  # campo da planilha do ERP
     DESCRICAO = "descricao"  # explícito na descrição do item (o trecho fica como evidência)
     CADASTRO = "cadastro"  # dados cadastrais da empresa (regime, UF, CNAE)
+    CODIGO = "codigo"  # decorre do próprio NCM/NBS do item (ex.: capítulo de bebidas alcoólicas); não é gravado
 
 
 class StatusPendencia(StrEnum):

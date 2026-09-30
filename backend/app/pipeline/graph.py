@@ -42,11 +42,9 @@ def _apos_escalonamento(state: ItemState) -> str:
 
 
 def _apos_arvore(state: ItemState) -> str:
-    return "concluir" if arvore.precisa_navegar(state) else "investigar"
-
-
-def _apos_investigacao(state: ItemState) -> str:
-    return "levantar_fatos" if state.tese_id else "concluir"
+    # Sem código não há tese da família, mas um regime da operação (ADR 0026) ainda pode decidir o
+    # enquadramento: o Leitor levanta os fatos dele (e não faz nada se a empresa não tiver nenhum).
+    return "levantar_fatos" if arvore.precisa_navegar(state) else "investigar"
 
 
 def construir_grafo() -> StateGraph[Any, Any, Any, Any]:
@@ -72,8 +70,8 @@ def construir_grafo() -> StateGraph[Any, Any, Any, Any]:
     )
     g.add_conditional_edges("julgar_coerencia", _apos_julgamento, ["escalar", "investigar", "navegar_arvore"])
     g.add_conditional_edges("escalar", _apos_escalonamento, ["navegar_arvore", "investigar"])
-    g.add_conditional_edges("navegar_arvore", _apos_arvore, ["investigar", "concluir"])
-    g.add_conditional_edges("investigar", _apos_investigacao, ["levantar_fatos", "concluir"])
+    g.add_conditional_edges("navegar_arvore", _apos_arvore, ["investigar", "levantar_fatos"])
+    g.add_edge("investigar", "levantar_fatos")
     g.add_edge("levantar_fatos", "concluir")
     g.add_edge("concluir", END)
     return g
