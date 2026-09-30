@@ -176,13 +176,19 @@ def rota(r: Registro) -> list[str]:
                 if r.arvore is not None:
                     caminho.append("navegador")
                     segue = r.arvore.get("codigo") or r.identidade.get("erp_mantido")
-                    caminho.append("jurista" if segue else "juiz")
+                    if segue:
+                        caminho.append("jurista")
+                    else:
+                        # Sem código, o Leitor ainda lê os fatos dos regimes da operação (ADR 0026).
+                        if "leitor" in r.chamadas:
+                            caminho.append("leitor")
+                        caminho.append("juiz")
                 elif not identificou or (r.julgamento and not valido):
                     caminho.append("juiz")  # itens de antes da busca guiada: sem código, direto ao Juiz
                 else:
                     caminho.append("jurista")
         if caminho[-1] == "jurista":
-            if r.tese:
+            if r.tese or "leitor" in r.chamadas:
                 caminho.append("leitor")
             caminho.append("juiz")
     if r.perguntas:
@@ -264,7 +270,7 @@ def _motivo_pulo(r: Registro, caixa: str, visitadas: list[str]) -> str:
     if caixa == "leitor":
         if r.tese_falha:
             return "Pulado: o estudo da lei não foi concluído."
-        return "Pulado: sem NCM definido não há parecer para aplicar."
+        return "Pulado: não havia fato a procurar na descrição (nem do parecer do produto nem de regime da operação)."
     if caixa == "secretario":
         return "Nenhuma pergunta foi necessária para este item."
     return "Pulado."
@@ -598,7 +604,11 @@ def _juiz(r: Registro) -> Passo:
     if r.status == "erro":
         return Passo("juiz", "falhou", f"O processamento terminou com erro: {r.erro or 'falha desconhecida'}.")
     destino = ROTULO_STATUS.get(r.status, r.status)
-    if r.cclasstrib:
+    if r.cclasstrib and (r.hipotese or "").startswith("OP-"):
+        resumo = f"Aplicou um regime da operação, que não depende do NCM → cClassTrib {r.cclasstrib}"
+        resumo += f" / CST {r.cst}" if r.cst else ""
+        resumo += f". Resultado: {destino}."
+    elif r.cclasstrib:
         resumo = f"Aplicou {r.hipotese or 'a hipótese'} → cClassTrib {r.cclasstrib}"
         resumo += f" / CST {r.cst}" if r.cst else ""
         resumo += f". Resultado: {destino}."

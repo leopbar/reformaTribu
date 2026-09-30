@@ -124,10 +124,17 @@ def consolidar(
     parecer = escalonamento if (escalonado and escalonamento_valido) else (julgamento if julgamento_valido else None)
     if parecer is None or not codigo_final or not tipo_codigo_final:
         motivo = "a identificação por IA não pôde ser concluída"
-        if julgamento_valido and julgamento and julgamento.get("nenhum_candidato_serve"):
+        # O parecer que decide é o segundo, quando houve; o primeiro pode ter sugerido um código que o
+        # segundo recusou (ex.: café torrado para um café espresso).
+        decisivo = parecer or (julgamento if julgamento_valido else None)
+        if decisivo and decisivo.get("nenhum_candidato_serve"):
             motivo = "nenhum código da tabela oficial descreve o item com segurança"
+            if decisivo.get("justificativa"):
+                motivo += ": " + str(decisivo["justificativa"])
         elif julgamento and julgamento.get("_descartado"):
             motivo = "a sugestão da IA foi descartada: " + str(julgamento["_descartado"])
+        if arvore is not None and not arvore.get("codigo") and not arvore.get("erro"):
+            motivo += " (a busca guiada pela tabela oficial também não achou um código)"
         return {
             **base,
             # A busca guiada também não achou código: o caminho dela fica registrado para a revisão.

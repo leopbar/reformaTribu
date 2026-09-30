@@ -1,6 +1,8 @@
 """Avaliação de um item: aplica a tese da família aos fatos do item (função pura, testável).
 
-1. Percorre as hipóteses na ordem de precedência (específica → regra geral).
+1. Percorre as hipóteses na ordem de precedência: primeiro os regimes decididos pela operação (bares e
+   restaurantes, farmácia de manipulação — `operacao.py`, valem mesmo sem NCM), depois as da tese da
+   família do produto (específica → regra geral).
    - condição com fato conhecido e diferente do exigido, ou exceção confirmada → hipótese afastada;
    - todas as condições confirmadas e exceções descartadas → hipótese escolhida;
    - falta um fato → a hipótese continua possível: se as alternativas que restam levam a
@@ -15,6 +17,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from app.analise.fatos import DESCONHECIDO, chave, valor
+from app.analise.operacao import ORIGEM as ORIGEM_OPERACAO
+from app.analise.operacao import cclasstrib_da_operacao
 from app.core.codes import formatar_codigo
 from app.models.enums import NivelRevisao, StatusItem
 
@@ -33,6 +37,7 @@ DIMENSOES: tuple[tuple[str, str], ...] = (
     ("imposto_seletivo", "Imposto Seletivo"),
 )
 ROTULOS = dict(DIMENSOES)
+_CCLASSTRIB_OPERACAO = cclasstrib_da_operacao()
 
 
 @dataclass
@@ -76,6 +81,11 @@ class EntradaAvaliacao:
     tratamento_alternativas: dict[str, str | None] = field(default_factory=dict)
     # Produtos que um anexo da lei nomeia com outro código (checagem cruzada com os anexos).
     produtos_na_lei: list[dict[str, Any]] = field(default_factory=list)
+    # Regimes decididos pela operação (ADR 0026): hipóteses avaliadas antes das do produto, com as
+    # perguntas que as decidem. As referências e os cClassTrib deles já vêm em `refs` e `cclasstrib`.
+    operacao: list[dict[str, Any]] = field(default_factory=list)
+    operacao_fatos: list[dict[str, Any]] = field(default_factory=list)
+    operacao_afastada: list[str] = field(default_factory=list)  # "regime: motivo" (vale para a empresa toda)
 
 
 @dataclass
@@ -178,7 +188,11 @@ def escolher(
 
 
 def _efeitos(
-    hipoteses: list[dict[str, Any]], fatos: dict[str, dict[str, Any]], atributo: str, opcoes: list[str]
+    hipoteses: list[dict[str, Any]],
+    fatos: dict[str, dict[str, Any]],
+    atributo: str,
+    opcoes: list[str],
+    sem_destino: str = "nenhuma hipótese se sustenta",
 ) -> list[dict[str, str]]:
     """Para cada resposta possível, o que o analista concluiria (simulação)."""
     saida = []
@@ -190,7 +204,7 @@ def _efeitos(
         elif faltando:
             efeito = "ainda depende de: " + ", ".join(f.replace("_", " ") for f in faltando)
         else:
-            efeito = "nenhuma hipótese se sustenta"
+            efeito = sem_destino
         saida.append({"valor": valor(op), "rotulo": rotulo_opcao(op), "efeito": efeito})
     return saida
 
@@ -315,8 +329,9 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
 
     if ent.base_incompleta:
         motivos.append("BASE_REFERENCIA_INCOMPLETA")
-    tese = ent.tese if not ent.tese_falha else None
-    if tese is None or not tese.get("hipoteses"):
+    tese_produto = ent.tese if not ent.tese_falha else None
+    sem_produto = tese_produto is None or not tese_produto.get("hipoteses")
+    if sem_produto and not ent.operacao:
         texto = ent.tese_falha or (
             "base de referência incompleta" if ent.base_incompleta else "investigação jurídica não realizada"
         )
@@ -327,16 +342,41 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
             motivos.append("TESE_NAO_CONCLUIDA")
         return _finalizar(Avaliacao(status="", nivel=None, confianca_global=""), dims, motivos)
 
+    # Regimes da operação primeiro; depois as hipóteses do produto (sem as que só a operação decide).
+    so_operacao = _CCLASSTRIB_OPERACAO
+    produto = [h for h in (tese_produto or {}).get("hipoteses", []) if h.get("cclasstrib") not in so_operacao]
+    tese: dict[str, Any] = {
+        "imposto_seletivo": None,
+        "conflitos": [],
+        **(tese_produto or {}),
+        "hipoteses": [*ent.operacao, *produto],
+        "fatos_necessarios": [*ent.operacao_fatos, *(tese_produto or {}).get("fatos_necessarios", [])],
+    }
     hipoteses = tese["hipoteses"]
     escolhida, faltando, avaliadas = escolher(hipoteses, ent.fatos)
-    necessarios = {chave(f["fato"]): f for f in tese.get("fatos_necessarios", [])}
+    op_escolhida = escolhida is not None and escolhida.get("origem") == ORIGEM_OPERACAO
+    necessarios: dict[str, dict[str, Any]] = {}
+    for f in tese["fatos_necessarios"]:
+        necessarios.setdefault(chave(f["fato"]), f)
     av = Avaliacao(status="", nivel=None, confianca_global="", hipoteses_avaliadas=avaliadas)
+    cod_item = (ent.identidade or {}).get("codigo_formatado") or (ent.identidade or {}).get("codigo")
+    falta_produto = (
+        f"o estudo da lei para o produto ({cod_item}) não foi concluído; reanalise o item"
+        if cod_item
+        else "o enquadramento pelo produto depende do NCM/NBS, ainda não definido"
+    )
+    # O efeito de uma resposta aparece numa pergunta que junta vários itens: não cita o código de um só.
+    sem_destino = (
+        "vale o tratamento do produto (NCM/NBS), que ainda precisa ser estudado"
+        if sem_produto
+        else "nenhuma hipótese se sustenta"
+    )
 
     # --- perguntas decisivas ---------------------------------------------------------------------
     for f in faltando:
         info = necessarios.get(f, {})
         escopo = info.get("escopo") or "item"
-        opcoes = _efeitos(hipoteses, ent.fatos, f, info.get("opcoes") or ["sim", "nao"])
+        opcoes = _efeitos(hipoteses, ent.fatos, f, info.get("opcoes") or ["sim", "nao"], sem_destino)
         av.perguntas.append(
             PerguntaNecessaria(
                 atributo=f,
@@ -352,7 +392,12 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
     dims["contexto"] = (
         Dimensao("contexto", PENDENTE, "falta no dossiê: " + ", ".join(p.atributo for p in empresa_pend))
         if empresa_pend
-        else Dimensao("contexto", OK, "dossiê suficiente para este item")
+        else Dimensao(
+            "contexto",
+            OK,
+            "dossiê suficiente para este item"
+            + ("; não se aplica à empresa: " + "; ".join(ent.operacao_afastada) if ent.operacao_afastada else ""),
+        )
     )
 
     # --- hipótese escolhida ----------------------------------------------------------------------
@@ -410,7 +455,7 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
             dims["fonte"] = Dimensao("fonte", FALHA, "benefício sem trecho legal ou correlação oficial citada")
         else:
             texto = ", ".join(dict.fromkeys(_rotulo_ref(ent.refs[f["ref"]], f["ref"]) for f in validos))
-            if ent.tese_aprovada:
+            if ent.tese_aprovada and not op_escolhida:
                 texto += " · tese validada por revisor"
             dims["fonte"] = Dimensao("fonte", ATENCAO if invalidos else OK, texto[:300])
     elif faltando:
@@ -419,6 +464,18 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
         dims["excecoes"] = Dimensao("excecoes", NA, "")
         dims["cclasstrib"] = Dimensao("cclasstrib", NA, "")
         dims["fonte"] = Dimensao("fonte", NA, "")
+    elif sem_produto:
+        # O regime da operação foi afastado e o produto não pôde ser estudado (sem NCM ou sem tese).
+        afastadas = [a for a in avaliadas if a["situacao"] == "afastada"]
+        porque = "; ".join(f"{a['titulo']}: {a['motivo'].rstrip('.')}" for a in afastadas)
+        base = ent.tese_falha or falta_produto
+        dims["regra"] = Dimensao(
+            "regra", FALHA if d_id.situacao != FALHA else NA, (f"{porque}. " if porque else "") + base
+        )
+        for k in ("condicoes", "excecoes", "cclasstrib", "fonte"):
+            dims[k] = Dimensao(k, NA, "")
+        if ent.tese_falha:
+            motivos.append("TESE_NAO_CONCLUIDA")
     else:
         dims["regra"] = Dimensao("regra", FALHA, "nenhuma hipótese se sustenta com os fatos conhecidos")
         for k in ("condicoes", "excecoes", "cclasstrib", "fonte"):
@@ -441,6 +498,9 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
     }
     for c in tese.get("conflitos", []):
         texto, refs = c.get("descricao") or "", set(c.get("refs") or [])
+        if op_escolhida and not (refs & refs_is or "seletivo" in texto.lower()):
+            informativos.append(texto)  # conflito da família do produto: o regime da operação prevalece
+            continue
         if c.get("muda_resultado") is False:
             informativos.append(texto)  # o próprio Jurista diz que não muda o cClassTrib
             continue
@@ -465,14 +525,14 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
 
     graves = [a.get("descricao") or "" for a in ent.alertas if a.get("gravidade") == "alta" and toca_o_item(a)]
     medios = [a.get("descricao") or "" for a in ent.alertas if a.get("gravidade") != "alta" and toca_o_item(a)]
-    analisados = {h["cclasstrib"] for h in hipoteses}
+    analisados = {h["cclasstrib"] for h in hipoteses} | so_operacao
     comentado = " ".join(
         [tese.get("observacoes") or "", *(c.get("descricao") or "" for c in tese.get("conflitos", []))]
     )
     nao_analisados = sorted(c for c in set(ent.correlacionados) - analisados if c not in comentado)
-    if nao_analisados:
+    if nao_analisados and not op_escolhida:
         medios.append("correlação oficial não analisada: " + ", ".join(nao_analisados))
-    if av.cclasstrib:
+    if av.cclasstrib and not op_escolhida:
         for p in ent.precedentes:
             if p.get("cclasstrib") and p["cclasstrib"] != av.cclasstrib and not p.get("condicoes"):
                 graves.append(f"regra aprovada ({p.get('dispositivo')}) indica {p['cclasstrib']}")
@@ -489,7 +549,7 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
         dims["conflito"] = Dimensao("conflito", OK, "nenhum conflito identificado")
 
     # --- Imposto Seletivo ----------------------------------------------------------------------------
-    sit = is_.get("situacao", "nao_sujeito")
+    sit = is_.get("situacao", "nao_sujeito") if not sem_produto else "nao_avaliado"
     if sit == "depende":
         h_is = {"id": "IS", "titulo": "Imposto Seletivo", "cclasstrib": "IS", "condicoes": is_.get("condicoes", [])}
         r = _testar(h_is, ent.fatos)
@@ -518,6 +578,14 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
         motivos.append("SUJEITO_A_IMPOSTO_SELETIVO")
     elif sit == "indefinido":
         dims["imposto_seletivo"] = Dimensao("imposto_seletivo", PENDENTE, "depende de fato do item")
+    elif sit == "nao_avaliado":
+        dims["imposto_seletivo"] = Dimensao(
+            "imposto_seletivo",
+            ATENCAO if escolhida is not None else NA,
+            "não avaliado: o Imposto Seletivo depende do NCM do produto, que ainda não foi estudado"
+            if escolhida is not None
+            else "",
+        )
     else:
         dims["imposto_seletivo"] = Dimensao("imposto_seletivo", OK, is_.get("explicacao") or "não sujeito")
     if sobre_is and dims["imposto_seletivo"].situacao == OK and sit != "nao_sujeito":
@@ -525,7 +593,13 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
 
     # --- a dúvida de identificação muda o imposto? ---------------------------------------------------
     alternativas = ent.tratamento_alternativas
-    if alternativas and dims["identificacao"].situacao == ATENCAO and av.cclasstrib and sit != "indefinido":
+    if (
+        alternativas
+        and dims["identificacao"].situacao == ATENCAO
+        and av.cclasstrib
+        and sit not in ("indefinido", "nao_avaliado")
+        and not op_escolhida
+    ):
         atual = f"{av.cclasstrib}|{'sujeito' if sit == 'sujeito' else 'nao_sujeito'}"
         if all(t == atual for t in alternativas.values()):
             idt = ent.identidade or {}
@@ -558,6 +632,17 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
                     )[:300],
                 )
 
+    # --- regime da operação: o cClassTrib não depende do NCM ------------------------------------------
+    if op_escolhida and escolhida is not None and escolhida.get("independe_do_codigo"):
+        nota = f"O cClassTrib não depende dele: {escolhida['titulo']}."
+        d = dims["codigo_fiscal"]
+        if d.situacao == FALHA:
+            dims["codigo_fiscal"] = Dimensao(
+                "codigo_fiscal", ATENCAO, f"NCM/NBS ainda não definido: defina-o para a nota fiscal. {nota}"
+            )
+        elif d.situacao == ATENCAO:
+            dims["codigo_fiscal"] = Dimensao("codigo_fiscal", ATENCAO, f"{d.texto} · {nota}"[:300])
+
     # --- a lei nomeia este produto com outro código? -------------------------------------------------
     if ent.produtos_na_lei and dims["codigo_fiscal"].situacao != FALHA:
         idt = ent.identidade or {}
@@ -582,10 +667,16 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
         av.conclusao = (
             f"{escolhida['titulo']}. {escolhida.get('explicacao', '').strip()}"
             + (f" Fatos determinantes: {cond}." if cond else "")
-            + (f" Imposto Seletivo: {'sujeito' if sit == 'sujeito' else 'não sujeito'}." if sit != "indefinido" else "")
+            + (
+                f" Imposto Seletivo: {'sujeito' if sit == 'sujeito' else 'não sujeito'}."
+                if sit not in ("indefinido", "nao_avaliado")
+                else ""
+            )
         ).strip()
     elif faltando:
         av.conclusao = "Não classificado: " + " ".join(p.motivo for p in av.perguntas[:2])
+    elif sem_produto:
+        av.conclusao = "Não classificado: " + dims["regra"].texto
     else:
         av.conclusao = "Não classificado: nenhuma hipótese se sustenta com os fatos conhecidos."
     if av.perguntas:

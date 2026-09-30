@@ -46,5 +46,7 @@ revisão humana se concentra no que tem dúvida real. A métrica principal da av
 [0020](0020-checagem-cruzada-com-os-anexos.md) (anexos da lei),
 [0021](0021-revisao-humana-e-reanalise.md) (revisão e reanálise),
 [0022](0022-economia-de-ia-e-estimativa.md) (economia),
-[0023](0023-robustez-das-chamadas-de-ia.md) (robustez) e
-[0024](0024-execucao-paralela-e-recuperacao.md) (execução paralela).
+[0023](0023-robustez-das-chamadas-de-ia.md) (robustez),
+[0024](0024-execucao-paralela-e-recuperacao.md) (execução paralela),
+[0026](0026-regimes-decididos-pela-operacao.md) (regimes decididos pela operação; respostas por item) e
+[0027](0027-beneficios-pela-natureza-do-produto.md) (benefícios pela natureza do produto).

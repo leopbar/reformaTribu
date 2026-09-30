@@ -136,14 +136,14 @@ export const AGENTES: Record<string, Agente> = {
   leitor: {
     nome: "Leitor de fatos",
     papel: "procura as respostas na descrição",
-    faz: "Separa o que está escrito (vira fato) do que é palpite (vira só sugestão).",
+    faz: "Separa o que está escrito (vira fato) do que é palpite (vira só sugestão). Também lê os fatos da operação (preparado no local? bebida alcoólica? manipulado?), inclusive de itens ainda sem NCM.",
     custo: "ia",
     icone: Brain,
   },
   juiz: {
     nome: "Juiz",
     papel: "aplica o parecer ao item",
-    faz: "Percorre as hipóteses com os fatos, preenche o boletim de 10 notas e decide o destino. Sem IA.",
+    faz: "Aplica primeiro os regimes da operação (ex.: bares e restaurantes, que não dependem do NCM), depois as hipóteses do Jurista; preenche o boletim de 10 notas e decide o destino. Sem IA.",
     custo: "gratis",
     icone: Gavel,
   },

@@ -56,15 +56,17 @@ flowchart TD
   V --> M[buscar_memoria<br/>identidade aprovada antes na empresa]
   M -- achou --> I
   M -- não achou --> R[recuperar_candidatos<br/>pgvector + tsvector pt + RRF]
-  R -- nenhum --> C
+  R -- nenhum --> A
   R --> J[julgar_coerencia<br/>o que o item É: NCM/NBS entre candidatos oficiais]
-  J -- resposta inválida --> C
+  J -- sem código --> A[navegar_arvore<br/>busca guiada: capítulo → posição → código<br/>até 3 capítulos]
   J -- dúvida --> X[escalar<br/>parecer independente]
   J --> I
+  X -- sem código --> A
   X --> I[investigar<br/>TESE DA FAMÍLIA: hipóteses, condições,<br/>exceções e trechos citados — 1 vez por família]
-  I -- tese --> L[levantar_fatos<br/>fatos explícitos na descrição/ERP<br/>suposição não vira fato]
-  I -- sem tese --> C
-  L --> C[concluir<br/>aplica a tese aos fatos; confiança por dimensão;<br/>perguntas decisivas; perfil tributário versionado]
+  A -- achou código --> I
+  A -- sem código --> L
+  I --> L[levantar_fatos<br/>fatos da tese e dos regimes da operação<br/>explícitos na descrição/ERP; suposição não vira fato]
+  L --> C[concluir<br/>regimes da operação, depois a tese; confiança por dimensão;<br/>perguntas decisivas; perfil tributário versionado]
   C --> F([fim])
 ```
 
@@ -74,18 +76,30 @@ vende (segmento, produção própria, fornecimento de refeições...). As respos
 
 **Fatos com origem** (`company_facts`, `app/analise/fatos.py`). Cada fato tem escopo (empresa, grupo, item),
 origem (pessoa, ERP, cadastro, texto explícito da descrição) e autor. Precedência: item > categoria do ERP >
-família (NCM) > empresa. Hipótese não é fato: o que a IA apenas supõe vira **sugestão** numa pergunta.
+família (NCM) > empresa. Hipótese não é fato: o que a IA apenas supõe vira **sugestão** numa pergunta. A
+resposta a uma pergunta de grupo grava um fato para cada item listado nela; um item que chega depois recebe
+a pergunta de novo (ADR 0026). Fatos que o código ou a lei já determinam (ex.: NCM de cerveja → bebida
+alcoólica) são recalculados a cada avaliação, com a origem à mostra.
 
 **Tese por família** (`tax_theses`, `app/analise/evidencias.py` + `investigacao.py`). Para cada combinação
 código + cenário + dossiê + data + base, o modelo de investigação recebe um pacote de evidências montado de
 forma determinística (as "ferramentas" do agente): descrição oficial do código, correlação oficial
-cClassTrib × NCM/NBS, itens de anexos que citam o código, artigos relevantes da LC 214/2025 e dos demais atos
+cClassTrib × NCM/NBS (completada pelas ligações que a lei faz pela natureza do produto — medicamentos,
+in natura, livros —, `natureza.py`, ADR 0027), itens de anexos que citam o código, artigos relevantes da LC 214/2025 e dos demais atos
 (EC 132/2023, LC 227/2026, Decreto 12.955/2026) por busca semântica e textual, os cClassTrib candidatos
 (lista fechada), precedentes aprovados e alertas de divergência. A resposta são **hipóteses em ordem de
 precedência** (a última é sempre a regra geral), cada uma com condições (fatos), exceções e fundamentos que
 citam as referências do pacote. A validação descarta cClassTrib fora da lista e marca citações inexistentes.
 A tese é reaproveitada por todos os itens da família, inclusive em auditorias seguintes — é isso que
 torna o processo viável com dezenas de milhares de itens.
+
+**Regimes decididos pela operação** (`app/analise/operacao.py`, ADR 0026). Alguns tratamentos dependem de
+quem vende e de como o item é fornecido, qualquer que seja o NCM: bares e restaurantes fornecendo
+alimentação preparada no local (200047) e farmácia de manipulação (200032). Ficam num catálogo declarativo,
+ativado pelo dossiê, com condições e exceções de item (preparado no local, bebida alcoólica, manipulado…) e
+os artigos lidos da base oficial. As hipóteses do catálogo são avaliadas antes das da tese e valem mesmo sem
+NCM; o NCM segue em paralelo para a nota fiscal. Tratamentos que dependem do comprador (governo, PcD,
+exportação) pertencem a outros cenários de operação.
 
 **Avaliação** (`app/analise/avaliacao.py`, função pura). Percorre as hipóteses: condição com fato
 diferente ou exceção confirmada afasta a hipótese; todas confirmadas a escolhem; fato desconhecido mantém
