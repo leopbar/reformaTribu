@@ -46,13 +46,15 @@ terceiros (GTIN); só os dados da própria organização.
      **"Ajustes de cadastro"** (`ajuste_cadastro`, `ajuste_cadastro_status`): uma pessoa aceita a
      sugestão ou mantém o NCM do ERP, em lote. Até lá, a exportação mantém o NCM do ERP. A decisão vira
      memória da empresa.
-   - Tratamentos diferentes e todos conhecidos → a pergunta **"o que é este item?"** vai ao operador
-     (`codigo_do_item`), com uma opção por código, o efeito de cada uma e "Nenhuma destas". A resposta
-     vira memória aprovada e o item é reanalisado com o código escolhido. Itens da mesma categoria com
-     as mesmas opções recebem uma pergunta só.
-   - Tratamento desconhecido de algum código, certeza baixa (abaixo de 0,5 com o NCM do ERP entre as
-     opções; abaixo de 0,7 sem ele), descrição vaga sem âncora, ou a lei citando o produto com outro
-     código → continua com o contador.
+   - Algum código leva (ou pode levar, quando o imposto dele só se sabe investigando) a outro imposto →
+     a pergunta **"o que é este item?"** vai ao operador (`codigo_do_item`), com o código escolhido, o do
+     ERP e os que mudam o imposto (os de mesmo imposto ficam fora), o efeito de cada um (ou os anexos da
+     lei que o citam) e "Nenhuma destas". Basta certeza de 0,4: perguntar exige menos que liberar,
+     porque "Nenhuma destas" leva ao contador. A resposta vira memória aprovada e o item é reanalisado
+     com o código escolhido. Itens da mesma categoria com as mesmas opções recebem uma pergunta só.
+   - Certeza baixa para liberar sozinho (abaixo de 0,5 com o NCM do ERP entre as opções; abaixo de 0,7
+     sem ele), descrição vaga sem âncora, capítulo em dúvida sem código (ver a revisão de 02/10), certeza
+     abaixo de 0,4 ou a lei citando o produto com outro código → continua com o contador.
    - Regimes decididos pela operação (bares e restaurantes, ADR 0026): o NCM vai para o cadastro, sem
      travar o enquadramento.
    - Guarda: código de serviço de alimentação (NBS 1.0301) numa empresa que informou não servir
@@ -152,3 +154,24 @@ assado, sushi e salada). A revisão encontrou e corrigiu:
   traduzir o nome de loja para o técnico da tabela (espécie pelo nome científico, assado = "cozido"), e a
   descida só pula direto para os códigos finais quando eles são até 25 (antes, 60); acima disso passa pela
   posição. Resultado: capítulo 16 → posição 16.02 → **1602.32.20**.
+- **Dúvida entre capítulos.** A salada pronta (sem NCM no ERP) foi ao contador com 2005.99.00 (hortícolas
+  preparados, imposto integral) e 60% de certeza. O Navegador tinha cogitado o capítulo 07 (verdura fresca,
+  alíquota zero pelo Anexo XV), mas só devolvia alternativas da posição escolhida (purê, broto de bambu):
+  "o imposto muda?" nunca via a opção que importava. Pior: numa nova reanálise a certeza deu 70% e o item
+  teria saído sozinho com o imposto cheio. Correções gerais (Navegador v4):
+  - quando a certeza no capítulo fica abaixo de 0,9, o Navegador desce também por cada capítulo
+    alternativo, com a hipótese que o fez cogitá-lo ("se for só verdura fresca cortada"), e devolve o
+    código achado como alternativa (`arvore.outros_capitulos`); na hipótese ele não pode desistir: se
+    nenhum código nomeia o item, usa o residual ("Outros");
+  - cada opção traz um rótulo em linguagem de loja; a pergunta entre capítulos usa os rótulos da escolha
+    do capítulo, que mostram o que separa as opções ("hortaliças frescas cortadas, sem preparo" ×
+    "salada preparada");
+  - capítulo em dúvida em que nenhum código foi achado (`arvore.capitulos_em_aberto`) impede concluir
+    que o imposto não muda: o item não sai sozinho;
+  - a pergunta "o que é este item?" passa a valer com certeza média e com imposto ainda desconhecido
+    (diz quais anexos citam o código), e mostra só as opções que mudam o imposto.
+
+  Resultado: a salada virou a pergunta "salada preparada (2005.99.00) × hortaliças frescas cortadas
+  (0709.99.90, Anexo XV)". Na medição sem IA, nenhum falso automático; o "sabonete líquido × em barra" e
+  outras dúvidas da mesma natureza deixam o contador e vão ao operador. Custo: cerca de US$ 0,01 a mais
+  por item navegado com dúvida de capítulo (de 4 a 6 chamadas do Navegador).

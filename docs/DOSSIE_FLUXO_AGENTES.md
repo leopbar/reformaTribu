@@ -296,6 +296,10 @@ classificado sozinho com resultado diferente do que uma pessoa já tinha decidid
   descrição vira observação).
 - **Navegador (instrução v3):** traduz o nome de loja para o nome técnico da tabela ("Gallus domesticus" é
   frango; assado é "cozido") antes de dizer que nenhuma opção serve.
+- **Navegador (instrução v4):** quando fica em dúvida entre dois capítulos (cru × preparado, fresco ×
+  conservado), procura o código nos dois e dá a cada opção um nome de loja ("hortaliças frescas cortadas"
+  × "salada preparada"). Se os impostos forem diferentes, o operador responde qual é o item, em vez de o
+  contador revisar. Se num dos capítulos nenhum código for achado, o item não sai sozinho.
 - **Jurista (instrução v4):** todo conflito diz qual fato o resolve (ex.: "destinado a ração?"); o fato
   conhecido resolve sozinho.
 - **Juiz:** pergunta "o imposto muda?". Se todos os NCM possíveis dão o mesmo imposto, o item sai

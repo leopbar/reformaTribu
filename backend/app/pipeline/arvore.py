@@ -4,12 +4,15 @@ Quando o ERP não trouxe um código válido, ou quando nenhum código da busca d
 Navegador desce pela tabela oficial: capítulo → posição → código final. Em cada passo a IA escolhe só
 entre opções oficiais, então o código certo está sempre entre as alternativas e nada é inventado.
 O código encontrado é uma SUGESTÃO: o item segue para o Jurista (e recebe CST/cClassTrib), mas vai
-para o contador confirmar o NCM.
+para o contador confirmar o NCM. Quando a dúvida é entre capítulos (cru × preparado, fresco × conservado),
+o Navegador também traz o código de cada capítulo alternativo, com um rótulo em linguagem de loja: se os
+impostos diferem, a avaliação pergunta ao operador o que o item é (ADR 0029).
 """
 
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass, field
 from typing import Any
 
 import structlog
@@ -32,6 +35,20 @@ log = structlog.get_logger()
 MAX_FOLHAS_DIRETAS = 25
 MAX_OPCOES = 150
 MAX_CAPITULOS = 3  # capítulos tentados quando o anterior não tem código que sirva
+# Abaixo desta certeza no capítulo, o Navegador também desce pelos capítulos alternativos (cru × preparado,
+# fresco × conservado…): o código de cada um entra nas opções da pergunta "o que é este item?" (ADR 0029).
+CERTEZA_CAPITULO_UNICO = 0.9
+
+
+@dataclass
+class _Descida:
+    """Resultado de uma descida da raiz (capítulo) até o código final."""
+
+    codigo: str | None = None
+    descricao: str = ""
+    rotulo: str = ""
+    alternativas: list[dict[str, Any]] = field(default_factory=list)
+    caminho: list[dict[str, str]] = field(default_factory=list)
 
 
 def _tabela(fonte: str) -> str:
@@ -95,12 +112,17 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
         }
     pistas = [p for p in (j.get("justificativa"), esc.get("justificativa")) if p]
     prompt = carregar("navegar_arvore", ctx.prompts.get("navegar_arvore"))
-    caminho: list[dict[str, str]] = []
     passos: list[dict[str, Any]] = []
     falhas: list[str] = []
 
-    def perguntar(nivel: str, opcoes: list[dict[str, Any]]) -> NavegacaoArvore | None:
-        conteudo = {
+    def perguntar(
+        nivel: str,
+        opcoes: list[dict[str, Any]],
+        caminho: list[dict[str, str]],
+        registro: list[dict[str, Any]],
+        hipotese: str | None = None,
+    ) -> NavegacaoArvore | None:
+        conteudo: dict[str, Any] = {
             "item": dados_item,
             "nivel": nivel,
             "caminho": [f"{c['codigo']} – {c['descricao']}" for c in caminho],
@@ -113,6 +135,8 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
             ],
             "pistas": pistas,
         }
+        if hipotese:
+            conteudo["hipotese"] = hipotese
         req = gateway.RequisicaoLLM(
             no="navegar_arvore",
             modelo=ctx.modelo_navegador,
@@ -140,55 +164,59 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
         if r.escolha not in validos:
             r.escolha = None
         r.alternativas = [a for a in r.alternativas if a.codigo in validos and a.codigo != r.escolha][:2]
-        passos.append(
+        registro.append(
             {"nivel": nivel, "escolha": r.escolha, "confianca": r.confianca, "justificativa": r.justificativa}
         )
         return r
 
-    def descer(raiz: dict[str, Any]) -> tuple[str | None, list[dict[str, Any]]]:
-        """Da raiz escolhida (capítulo) até o código final. Devolve (código, alternativas finais)."""
-        caminho.clear()
-        caminho.append({"codigo": raiz["codigo"], "descricao": raiz["descricao"]})
+    def descer(raiz: dict[str, Any], registro: list[dict[str, Any]], hipotese: str | None = None) -> _Descida:
+        """Da raiz escolhida (capítulo) até o código final."""
+        caminho = [{"codigo": raiz["codigo"], "descricao": raiz["descricao"]}]
         with sync_tenant_session(ctx.tenant) as s:
             opcoes = _opcoes(s, fonte, versao, raiz["codigo"])
         for _ in range(7):  # posição → subposições (quantas a tabela tiver) → código
             if not opcoes:
-                return None, []
+                break
             # Poucos códigos finais sob o nível atual: pergunta direto entre eles.
             with sync_tenant_session(ctx.tenant) as s:
                 folhas = _folhas(s, fonte, versao, caminho[-1]["codigo"])
             if len(folhas) <= MAX_FOLHAS_DIRETAS:
                 opcoes = folhas
             nivel = "codigo" if all(o["folha"] for o in opcoes) else "posicao"
-            resposta = perguntar(nivel, opcoes)
+            resposta = perguntar(nivel, opcoes, caminho, registro, hipotese)
             if resposta is None or resposta.escolha is None:
-                return None, []
+                break
             escolhido = next(o for o in opcoes if o["codigo"] == resposta.escolha)
             if escolhido["folha"]:
                 por_codigo = {o["codigo"]: o for o in opcoes}
                 alternativas = [
-                    {**por_codigo[a.codigo], "motivo": a.motivo}
+                    {**por_codigo[a.codigo], "motivo": a.motivo, "rotulo": a.rotulo}
                     for a in resposta.alternativas
                     if por_codigo[a.codigo]["folha"]
                 ]
                 caminho.append({"codigo": escolhido["codigo"], "descricao": _descricao_folha(escolhido["descricao"])})
-                return escolhido["codigo"], alternativas
+                return _Descida(escolhido["codigo"], escolhido["descricao"], resposta.rotulo, alternativas, caminho)
             caminho.append({"codigo": escolhido["codigo"], "descricao": escolhido["descricao"]})
             with sync_tenant_session(ctx.tenant) as s:
                 opcoes = _opcoes(s, fonte, versao, escolhido["codigo"])
-        return None, []
+        return _Descida(caminho=caminho)
 
     with sync_tenant_session(ctx.tenant) as s:
         raizes = _opcoes(s, fonte, versao, None)
-    alternativas_folhas: list[dict[str, Any]] = []
-    codigo: str | None = None
+    descida = _Descida()
     inicio = 0
-    primeira = perguntar("capitulo", raizes)
+    # Códigos achados nos capítulos alternativos: o item pode ser "de outro jeito" (cru × preparado…).
+    outros_capitulos: list[dict[str, Any]] = []
+    # Capítulos em dúvida em que nenhum código foi achado: o imposto deles fica desconhecido.
+    capitulos_em_aberto: list[str] = []
+    primeira = perguntar("capitulo", raizes, [], passos)
     if primeira is not None and primeira.escolha is not None:
         por_raiz = {o["codigo"]: o for o in raizes}
+        hipoteses = {a.codigo: a for a in primeira.alternativas}
         # Se o capítulo escolhido não tiver código que sirva, tenta os alternativos, do mais provável ao
         # menos (até 3 no total: ex. café espresso → 22 bebidas, 09 café em grão, 21 preparações).
         tentativas = [primeira.escolha, *(a.codigo for a in primeira.alternativas)][:MAX_CAPITULOS]
+        tentados: set[str] = set()
         for n, cap in enumerate(tentativas):
             inicio = len(passos)
             if n > 0:
@@ -200,15 +228,50 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
                         "justificativa": f"{n + 1}º capítulo tentado: nos anteriores, nenhum código serviu.",
                     }
                 )
-            codigo, alternativas_folhas = descer(por_raiz[cap])
-            if codigo:
+            tentados.add(cap)
+            descida = descer(por_raiz[cap], passos)
+            if descida.codigo:
                 break
+        # Dúvida real entre capítulos: procura também o código de cada capítulo alternativo ainda não visto.
+        # Se os impostos forem diferentes, a avaliação pergunta ao operador o que o item é, em vez de mandar
+        # para o contador (ADR 0029).
+        if descida.codigo and primeira.confianca < CERTEZA_CAPITULO_UNICO:
+            for cap in tentativas:
+                if cap in tentados:
+                    continue
+                hip = hipoteses[cap]
+                passos_hip: list[dict[str, Any]] = []
+                outra = descer(por_raiz[cap], passos_hip, hipotese=hip.motivo or hip.rotulo)
+                if not outra.codigo:
+                    capitulos_em_aberto.append(cap)
+                    continue
+                outros_capitulos.append(
+                    {
+                        "codigo": outra.codigo,
+                        "descricao": outra.descricao,
+                        "motivo": hip.motivo,
+                        # O rótulo dado na escolha do capítulo mostra o que separa as opções (cru × preparado);
+                        # o do código final tende a repetir o nome do item.
+                        "rotulo": hip.rotulo or outra.rotulo,
+                        "capitulo": cap,
+                        "passos": passos_hip,
+                    }
+                )
 
+    codigo = descida.codigo
+    alternativas_folhas = [*outros_capitulos, *descida.alternativas]
+    rotulo = descida.rotulo
+    if outros_capitulos and primeira is not None and primeira.rotulo:
+        rotulo = primeira.rotulo  # a pergunta é entre capítulos: vale o rótulo que os contrasta
     # Certeza do caminho que deu certo (a partir do capítulo em que o código foi achado).
     caminho_certo = [passos[0], *passos[inicio:]] if passos else []
     confianca = min((p["confianca"] for p in caminho_certo), default=0.0)
     with sync_tenant_session(ctx.tenant) as s:
         leque = _folhas(s, fonte, versao, codigo[:4]) if codigo else []
+    vistos = {o["codigo"] for o in leque}
+    leque += [
+        {"codigo": o["codigo"], "descricao": o["descricao"]} for o in outros_capitulos if o["codigo"] not in vistos
+    ]
     candidatos = [
         {
             "tipo_codigo": fonte,
@@ -228,7 +291,8 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
         "codigo_formatado": formatar_codigo(fonte, codigo) if codigo else None,
         "confianca": round(confianca, 3),
         "justificativa": passos[-1]["justificativa"] if passos else "",
-        "caminho": caminho,
+        "rotulo": rotulo,
+        "caminho": descida.caminho,
         "passos": passos,
         "erro": falhas[-1] if falhas and not codigo else None,
         "modelo": ctx.modelo_navegador,
@@ -238,9 +302,21 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
                 "codigo_formatado": formatar_codigo(fonte, a["codigo"]),
                 "descricao": _descricao_folha(a["descricao"]),
                 "motivo": a.get("motivo", ""),
+                "rotulo": a.get("rotulo", ""),
+                **({"capitulo": a["capitulo"]} if a.get("capitulo") else {}),
             }
             for a in alternativas_folhas
         ],
+        **(
+            {
+                "outros_capitulos": [
+                    {"capitulo": o["capitulo"], "codigo": o["codigo"], "passos": o["passos"]} for o in outros_capitulos
+                ]
+            }
+            if outros_capitulos
+            else {}
+        ),
+        **({"capitulos_em_aberto": capitulos_em_aberto} if capitulos_em_aberto else {}),
     }
     saida: dict[str, Any] = {"arvore": arvore}
     if candidatos:

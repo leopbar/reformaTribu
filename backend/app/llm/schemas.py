@@ -450,15 +450,20 @@ SCHEMA_NAVEGACAO: dict[str, Any] = {
             "type": "array",
             "items": {
                 "type": "object",
-                "properties": {"codigo": {"type": "string"}, "motivo": {"type": "string"}},
-                "required": ["codigo", "motivo"],
+                "properties": {
+                    "codigo": {"type": "string"},
+                    "motivo": {"type": "string"},
+                    "rotulo": {"type": "string"},
+                },
+                "required": ["codigo", "motivo", "rotulo"],
                 "additionalProperties": False,
             },
         },
         "confianca": {"type": "number"},
         "justificativa": {"type": "string"},
+        "rotulo": {"type": "string"},
     },
-    "required": ["escolha", "alternativas", "confianca", "justificativa"],
+    "required": ["escolha", "alternativas", "confianca", "justificativa", "rotulo"],
     "additionalProperties": False,
 }
 
@@ -466,6 +471,9 @@ SCHEMA_NAVEGACAO: dict[str, Any] = {
 class AlternativaArvore(BaseModel):
     codigo: str
     motivo: str = ""
+    # O que o item é, em linguagem de loja, se esta opção estiver certa (instrução v4): vira opção da
+    # pergunta "o que é este item?" ao operador.
+    rotulo: str = ""
 
 
 class NavegacaoArvore(BaseModel):
@@ -473,6 +481,7 @@ class NavegacaoArvore(BaseModel):
     alternativas: list[AlternativaArvore] = Field(default_factory=list)
     confianca: float
     justificativa: str = ""
+    rotulo: str = ""
 
     @field_validator("confianca")
     @classmethod

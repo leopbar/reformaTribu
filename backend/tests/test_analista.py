@@ -366,7 +366,7 @@ def test_duvida_que_nao_muda_o_imposto_nao_manda_ao_contador() -> None:
     assert "não muda o imposto" in ident.texto
 
 
-def test_duvida_que_muda_o_imposto_vira_pergunta_e_a_desconhecida_vai_ao_contador() -> None:
+def test_duvida_que_muda_o_imposto_vira_pergunta_ao_operador() -> None:
     muda = {"20096900": "000001|nao_sujeito"}
     av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=DUVIDA, tratamento_alternativas=muda))
     assert av.status == "aguardando_informacao" and av.nivel == "operacional"
@@ -378,9 +378,95 @@ def test_duvida_que_muda_o_imposto_vira_pergunta_e_a_desconhecida_vai_ao_contado
     outro = {"adicao_acucar": fato("nao"), "codigo_do_item": fato("outro")}
     av = avaliar(entrada(outro, identidade=DUVIDA, tratamento_alternativas=muda))
     assert av.status == "revisao_contador"
-    # Tratamento desconhecido de alguma opção: continua com o contador.
-    av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=DUVIDA, tratamento_alternativas={"20096900": None}))
+    # Imposto de uma opção ainda desconhecido (pode mudar): também pergunta, e diz o que a lei cita.
+    av = avaliar(
+        entrada(
+            {"adicao_acucar": fato("nao")},
+            identidade=DUVIDA,
+            tratamento_alternativas={"20096900": None},
+            beneficios_em_disputa={"20096900": "Anexo VII – Alimentos"},
+        )
+    )
+    assert av.status == "aguardando_informacao"
+    p = next(p for p in av.perguntas if p.atributo == "codigo_do_item")
+    assert "depois da resposta" in p.opcoes[1]["efeito"] and "Anexo VII" in p.opcoes[1]["efeito"]
+    assert "O imposto depende da resposta" in p.pergunta
+
+
+def test_duvida_entre_capitulos_com_certeza_media_pergunta_o_que_e_o_item() -> None:
+    """Salada pronta (ADR 0029): sem NCM no ERP, o Navegador sugeriu "hortícolas preparados" com 60% e trouxe
+    o código do outro capítulo (verdura fresca). Os impostos diferem: pergunta ao operador, não ao contador."""
+    idt = {
+        **IDENTIDADE_OK,
+        "situacao": "sugerido",
+        "via_arvore": True,
+        "codigo": "20059900",
+        "codigo_formatado": "2005.99.00",
+        "codigo_erp": None,
+        "confianca_modelo": 0.6,
+        "codigos_em_disputa": ["07099990", "20051000"],
+        "rotulos_em_disputa": {"20059900": "salada temperada ou com molho", "07099990": "verduras frescas cortadas"},
+        "descricoes_em_disputa": {"20051000": "Outros produtos hortícolas › Produtos hortícolas homogeneizados"},
+    }
+    trat = {"07099990": "200014|nao_sujeito", "20051000": "="}
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=idt, tratamento_alternativas=trat))
+    assert av.status == "aguardando_informacao"
+    p = next(p for p in av.perguntas if p.atributo == "codigo_do_item")
+    # A opção de mesmo imposto (homogeneizados) não ajuda a decidir: fica fora da lista.
+    assert [o["valor"] for o in p.opcoes] == ["20059900", "07099990", "outro"]
+    assert p.opcoes[1]["rotulo"].startswith("verduras frescas cortadas") and "200014" in p.opcoes[1]["efeito"]
+    # Com certeza muito baixa, nem a pergunta: o contador.
+    av = avaliar(
+        entrada(
+            {"adicao_acucar": fato("nao")}, identidade={**idt, "confianca_modelo": 0.3}, tratamento_alternativas=trat
+        )
+    )
     assert av.status == "revisao_contador"
+    # Com o mesmo imposto em todas as opções, a certeza média não basta para liberar sozinho.
+    av = avaliar(
+        entrada(
+            {"adicao_acucar": fato("nao")}, identidade=idt, tratamento_alternativas={"07099990": "=", "20051000": "="}
+        )
+    )
+    assert av.status == "revisao_contador"
+
+
+def test_capitulo_em_duvida_sem_codigo_impede_liberar_sozinho() -> None:
+    """Salada pronta, 2ª reanálise: certeza de 70% e alternativas do mesmo capítulo (mesmo imposto), mas o
+    capítulo de verdura fresca ficou sem código. Não dá para dizer que o imposto não muda: contador."""
+    idt = {
+        **IDENTIDADE_OK,
+        "situacao": "sugerido",
+        "via_arvore": True,
+        "codigo_erp": None,
+        "confianca_modelo": 0.7,
+        "codigos_em_disputa": ["20051000"],
+        "arvore": {"capitulos_em_aberto": ["07"]},
+    }
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=idt, tratamento_alternativas={"20051000": "="}))
+    assert av.status == "revisao_contador" and not av.ajuste_cadastro
+    # Sem capítulo em aberto, a mesma situação libera o IBS/CBS e manda o NCM para "Ajustes de cadastro".
+    idt["arvore"] = {}
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=idt, tratamento_alternativas={"20051000": "="}))
+    assert av.status == "classificado" and av.ajuste_cadastro
+
+
+def test_titulo_do_anexo_curto_com_a_reducao() -> None:
+    from app.analise.aplicacao import _titulo_do_anexo
+
+    longo = "PRODUTOS HORTÍCOLAS, FRUTAS E OVOS SUBMETIDOS À REDUÇÃO DE 100% (CEM POR CENTO) DAS ALÍQUOTAS DO IBS"
+    assert _titulo_do_anexo(longo) == "Produtos hortícolas, frutas e ovos (redução de 100%)"
+    assert _titulo_do_anexo("Alimentos submetidos à redução a zero das alíquotas") == "Alimentos (redução a zero)"
+    assert _titulo_do_anexo("Dispositivos médicos") == "Dispositivos médicos"
+
+
+def test_nome_oficial_pula_os_niveis_outros() -> None:
+    from app.analise.avaliacao import _nome_oficial
+
+    desc = "Outros produtos hortícolas preparados › Outros produtos hortícolas e misturas › Outros"
+    assert _nome_oficial(desc) == "Outros produtos hortícolas e misturas (outros)"
+    assert _nome_oficial("Suco de uva › Com valor Brix até 30") == "Com valor Brix até 30"
+    assert _nome_oficial("") == ""
 
 
 # ------------------------------------------------------------ checagem cruzada com os anexos --

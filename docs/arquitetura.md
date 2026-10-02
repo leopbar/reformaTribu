@@ -58,7 +58,7 @@ flowchart TD
   M -- não achou --> R[recuperar_candidatos<br/>pgvector + tsvector pt + RRF]
   R -- nenhum --> A
   R --> J[julgar_coerencia<br/>o que o item É: NCM/NBS entre candidatos oficiais]
-  J -- sem código --> A[navegar_arvore<br/>busca guiada: capítulo → posição → código<br/>até 3 capítulos]
+  J -- sem código --> A[navegar_arvore<br/>busca guiada: capítulo → posição → código<br/>até 3 capítulos; na dúvida de capítulo,<br/>o código de cada um vira opção]
   J -- dúvida --> X[escalar<br/>parecer independente]
   J --> I
   X -- sem código --> A
@@ -129,7 +129,8 @@ normativo e Imposto Seletivo. Resultado e nível de revisão:
   assinatura jurídica (correlação oficial, itens dos anexos, benefícios pela natureza) têm o mesmo
   tratamento. Todos iguais: o IBS/CBS sai e o NCM, quando muda o cadastro, vai para a lista **Ajustes de
   cadastro** (aceitar a sugestão ou manter o NCM do ERP, em lote; até lá, a exportação mantém o do ERP).
-  Diferentes e conhecidos: pergunta "o que é este item?" ao operador; a resposta vira memória aprovada e o
+  Diferentes (ou ainda desconhecidos): pergunta "o que é este item?" ao operador, já com certeza média
+  (0,4), porque "Nenhuma destas" leva ao contador; a resposta vira memória aprovada e o
   item é reanalisado com o código escolhido.
 - **O NCM do ERP é um voto**: se o parecer que decide fica com ele, o código está confirmado (dois votos
   contra um). Instruções v3 do Identificador e do Segundo parecer: conferir o código do cadastro em vez de
