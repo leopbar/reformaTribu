@@ -805,6 +805,21 @@ def test_navegador_traz_o_codigo_do_capitulo_em_duvida_e_pergunta_ao_operador(am
     assert "38089419" in codigos
 
 
+def test_navegador_ve_o_que_cada_posicao_inclui(ambiente: dict[str, Any]) -> None:
+    """O título da posição é genérico; os nomes das subdivisões mostram o que ela abrange (frango assado)."""
+    from sqlalchemy import text
+
+    from app.db.session import TenantContext, sync_tenant_session
+    from app.pipeline.arvore import _subdivisoes
+
+    with sync_tenant_session(TenantContext.sistema(ambiente["org_id"])) as s:
+        versao = s.execute(text("SELECT version_id FROM ncm_nodes WHERE codigo = '34' LIMIT 1")).scalar()
+        inclui = _subdivisoes(s, "ncm", versao, ["3401", "34013000"])
+    # Só quem se divide aparece; o código final não tem subdivisões.
+    assert list(inclui) == ["3401"]
+    assert inclui["3401"].startswith("De toucador (incluindo os de uso medicinal); Produtos e preparações")
+
+
 def test_navegador_tenta_o_capitulo_alternativo(ambiente: dict[str, Any]) -> None:
     from app.audits.processing import processar_itens
 
