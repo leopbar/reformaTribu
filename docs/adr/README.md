@@ -40,7 +40,7 @@ Uma decisão revista não é apagada: a ADR antiga recebe um aviso apontando par
 | [0026](0026-regimes-decididos-pela-operacao.md) | Regimes decididos pela operação (bares e restaurantes, manipulação), valem sem NCM; resposta em grupo só para os itens listados | aceito |
 | [0027](0027-beneficios-pela-natureza-do-produto.md) | Benefícios pela natureza do produto sem lista de NCM (medicamentos, in natura, livros); marca que é o produto fica; tipo do ERP | aceito |
 | [0028](0028-memoria-de-decisoes.md) | Memória de decisões: aprovações de pessoas reforçam (1, 2, 3 = confirma) ou contestam a análise por NCM, cenário e ramo; tela de regras vira resumo | aceito |
-| [0029](0029-menos-revisao-humana.md) | Menos revisão humana: falha da IA pausa e retoma sozinha; IS na origem para quem só revende; "o imposto muda?" decide a revisão (ajustes de cadastro e pergunta "o que é o item?"); NCM do ERP como voto; itens parecidos aprovados; conflito com fato que decide; revisão por grupo; medição sem IA | aceito |
+| [0029](0029-menos-revisao-humana.md) | Menos revisão humana: falha da IA pausa e retoma sozinha; IS na origem para quem só revende; "o imposto muda?" decide a revisão (ajustes de cadastro e pergunta "o que é o item?", também na dúvida entre capítulos); NCM do ERP como voto; itens parecidos aprovados; conflito com fato que decide; revisão por grupo; medição sem IA | aceito |
 
 ## Mapa rápido: os agentes e as ADRs
 

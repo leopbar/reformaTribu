@@ -149,6 +149,24 @@ class FakeClaude:
             if "34013000" in opcoes:
                 return {**nada, "escolha": "34013000", "confianca": 0.8}
             return nada
+        if "SABONETE OU DESINFETANTE" in c["item"]["descricao_original"]:
+            # Dúvida entre capítulos: o Navegador desce também pelo alternativo, com a hipótese dele.
+            if c["nivel"] == "capitulo":
+                alt = [{"codigo": "38", "motivo": "se for desinfetante", "rotulo": "desinfetante para a casa"}]
+                return {
+                    **nada,
+                    "escolha": "34",
+                    "alternativas": alt,
+                    "confianca": 0.7,
+                    "rotulo": "sabonete para a pele",
+                }
+            if "34013000" in opcoes:
+                assert "hipotese" not in c
+                return {**nada, "escolha": "34013000", "confianca": 0.8, "rotulo": "sabonete ou desinfetante"}
+            if "38089419" in opcoes:
+                assert c["hipotese"] == "se for desinfetante"
+                return {**nada, "escolha": "38089419", "confianca": 0.7, "rotulo": "sabonete ou desinfetante"}
+            return nada
         if "KIT SABONETE" not in c["item"]["descricao_original"]:
             return nada  # ex.: "PRODUTO MISTERIOSO" não cabe em nenhum capítulo
         for alvo in ("34013000", "3401", "34"):
@@ -753,9 +771,38 @@ def test_item_sem_ncm_recebe_sugestao_pela_arvore_oficial(ambiente: dict[str, An
     assert i.identidade["via_arvore"] is True and i.identidade["situacao"] == "sugerido"
     assert [a["codigo"] for a in i.identidade["arvore"]["alternativas"]] == ["34011190"]
     assert i.cclasstrib_sugerido is not None
-    assert i.status == "revisao_contador"  # o NCM sugerido precisa de confirmação
+    # Líquido ou em barra? A barra está no Anexo VIII (o imposto pode mudar): pergunta ao operador (ADR 0029).
+    assert i.status == "aguardando_informacao"
+    assert [o["valor"] for o in i.perguntas[0]["opcoes"]] == ["34013000", "34011190", "outro"]
     assert any(c.startswith("arvore-capitulo:") for c in fake.chamadas)
     assert any(c.startswith("arvore-codigo:") for c in fake.chamadas)
+
+
+def test_navegador_traz_o_codigo_do_capitulo_em_duvida_e_pergunta_ao_operador(ambiente: dict[str, Any]) -> None:
+    """Dúvida entre capítulos (ADR 0029): o código de cada um vira uma opção, com o rótulo de loja."""
+    from app.audits.processing import processar_itens
+
+    org = ambiente["org_id"]
+    aid, (item,) = ambiente["nova_auditoria"]([("SABONETE OU DESINFETANTE 1L", None)])
+    processar_itens(aid, org, [item])
+    i = _item(org, item)
+    arvore = i.identidade["arvore"]
+    assert arvore["codigo"] == "34013000" and arvore["caminho"][0]["codigo"] == "34"
+    assert arvore["alternativas"][0]["codigo"] == "38089419" and arvore["alternativas"][0]["capitulo"] == "38"
+    assert arvore["outros_capitulos"][0]["passos"]  # o caminho do outro capítulo fica registrado à parte
+    assert i.identidade["codigos_em_disputa"] == ["38089419"]
+    assert i.status == "aguardando_informacao"
+    # Os rótulos vêm da escolha do capítulo, que contrasta as opções (o do código final repete o nome do item).
+    opcoes = {o["valor"]: o["rotulo"] for o in i.perguntas[0]["opcoes"]}
+    assert opcoes["34013000"].startswith("sabonete para a pele")
+    assert opcoes["38089419"].startswith("desinfetante para a casa")
+    # O código do outro capítulo também aparece entre os candidatos da revisão (botão "Usar").
+    from app.db.session import TenantContext, sync_tenant_session
+    from app.models import ItemCandidate
+
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        codigos = set(s.scalars(select(ItemCandidate.codigo).where(ItemCandidate.item_id == item)))
+    assert "38089419" in codigos
 
 
 def test_navegador_tenta_o_capitulo_alternativo(ambiente: dict[str, Any]) -> None:

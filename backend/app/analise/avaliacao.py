@@ -54,6 +54,9 @@ PERGUNTA_IS = (
 # Pergunta "o que é este item?" quando os códigos possíveis têm tratamentos diferentes (ADR 0029).
 FATO_CODIGO = "codigo_do_item"
 MESMO = "="  # o código alternativo tem a mesma assinatura jurídica do escolhido
+# Certeza mínima para perguntar ao operador "o que é este item?". Perguntar exige menos que liberar o imposto
+# sozinho (0,7 sem o NCM do ERP), porque a opção "Nenhuma destas" sempre leva ao contador (ADR 0029).
+PISO_PERGUNTA_CODIGO = 0.4
 NBS_ALIMENTACAO = "10301"  # NBS 1.0301: fornecimento de alimentação, incluindo refeições
 # Palavras do nome oficial do cClassTrib que indicam outro cenário de operação (comprador ou destino
 # diferentes, ADR 0026): não disputam o enquadramento da venda comum ao consumidor.
@@ -111,6 +114,8 @@ class EntradaAvaliacao:
     # Códigos alternativos citados na dúvida de identificação → "cClassTrib|IS" que teriam
     # (None = não dá para saber sem investigar). Serve para saber se a dúvida muda o imposto.
     tratamento_alternativas: dict[str, str | None] = field(default_factory=dict)
+    # Para os de imposto desconhecido: os anexos da lei que citam o código (explicam a pergunta ao operador).
+    beneficios_em_disputa: dict[str, str] = field(default_factory=dict)
     # Produtos que um anexo da lei nomeia com outro código (checagem cruzada com os anexos).
     produtos_na_lei: list[dict[str, Any]] = field(default_factory=list)
     # Regimes decididos pela operação (ADR 0026): hipóteses avaliadas antes das do produto, com as
@@ -927,11 +932,11 @@ def _duvida_de_codigo(ent: EntradaAvaliacao, av: Avaliacao, dims: dict[str, Dime
     """A dúvida sobre o NCM/NBS muda o imposto? (ADR 0019 e 0029)
 
     Compara o tratamento do código escolhido com o de todos os códigos em disputa (o do ERP, o de cada
-    parecer e as alternativas). Se todos dão o mesmo cClassTrib e Imposto Seletivo, a classificação do
-    IBS/CBS sai e o código, quando muda o cadastro, vai para a lista "Ajustes de cadastro" (uma pessoa
-    confirma o NCM sem travar o imposto). Se os tratamentos diferem e são todos conhecidos, vira a pergunta
-    "o que é este item?" ao operador. Se o tratamento de algum código não é conhecido, continua com o
-    contador."""
+    parecer e as alternativas, inclusive as de outro capítulo trazidas pelo Navegador). Se todos dão o mesmo
+    cClassTrib e Imposto Seletivo, a classificação do IBS/CBS sai e o código, quando muda o cadastro, vai
+    para a lista "Ajustes de cadastro" (uma pessoa confirma o NCM sem travar o imposto); isso exige
+    segurança. Se algum código leva (ou pode levar, quando o tratamento não é conhecido) a outro imposto,
+    vira a pergunta "o que é este item?" ao operador, com certeza média: "Nenhuma destas" leva ao contador."""
     idt = ent.identidade or {}
     codigo = idt.get("codigo")
     if not codigo or idt.get("situacao") in (None, "indefinido", "memoria"):
@@ -949,19 +954,25 @@ def _duvida_de_codigo(ent: EntradaAvaliacao, av: Avaliacao, dims: dict[str, Dime
     # O código do cadastro entre as opções é uma âncora independente da IA: aceita certeza menor.
     ancora = bool(erp) and (erp == codigo or erp in disputa)
     conf = float(idt.get("confianca_modelo") or 0)
-    if conf < (0.5 if ancora else 0.7):
-        return
-    # Descrição vaga: o produto verdadeiro pode estar fora das opções. Só segue com uma âncora (o NCM do
-    # ERP entre as opções) ou com os dois pareceres da IA de acordo.
+    # Descrição vaga: o produto verdadeiro pode estar fora das opções. Liberar sozinho só com uma âncora (o
+    # NCM do ERP entre as opções) ou com os dois pareceres da IA de acordo.
     dois_pareceres = bool(idt.get("segundo_parecer") and idt.get("concordancia"))
-    if idt.get("descricao_suficiente") is False and not (ancora or dois_pareceres):
-        return
+    # O Navegador ficou em dúvida entre capítulos e não achou código em algum deles: o imposto desse outro
+    # jeito de ser o item é desconhecido, então não dá para dizer que a dúvida não muda o imposto.
+    em_aberto = bool((idt.get("arvore") or {}).get("capitulos_em_aberto"))
+    seguro = (
+        conf >= (0.5 if ancora else 0.7)
+        and not (idt.get("descricao_suficiente") is False and not (ancora or dois_pareceres))
+        and not em_aberto
+    )
     if _servico_de_alimentacao_sem_refeicoes(ent):
         return
-    if any(t is None for t in disputa.values()):
-        return
     if any(t not in (atual, MESMO) for t in disputa.values()):
-        _pergunta_de_identificacao(ent, av, dims, disputa, atual)
+        # Uma opção leva (ou pode levar) a outro imposto: quem conhece o produto diz o que ele é.
+        if conf >= PISO_PERGUNTA_CODIGO:
+            _pergunta_de_identificacao(ent, av, dims, disputa, atual)
+        return
+    if not seguro:
         return
     if not disputa and not (idt.get("dois_votos") or conf >= 0.85):
         return
@@ -1003,31 +1014,43 @@ def _duvida_de_codigo(ent: EntradaAvaliacao, av: Avaliacao, dims: dict[str, Dime
 def _pergunta_de_identificacao(
     ent: EntradaAvaliacao, av: Avaliacao, dims: dict[str, Dimensao], disputa: dict[str, str | None], atual: str
 ) -> None:
-    """Os códigos possíveis têm tratamentos diferentes: pergunta ao operador o que o item é (ADR 0029)."""
+    """Os códigos possíveis têm tratamentos diferentes: pergunta ao operador o que o item é (ADR 0029).
+
+    As opções são o código escolhido, o do ERP e os que levam (ou podem levar) a outro imposto. Os demais
+    têm o mesmo imposto do escolhido: não ajudam a decidir e só alongariam a lista."""
     idt = ent.identidade or {}
     if _valor_fato(ent.fatos, FATO_CODIGO) != DESCONHECIDO:
         return  # já respondida com "nenhuma destas": o contador decide
     tipo = idt.get("tipo_codigo") or "ncm"
     codigo = str(idt.get("codigo"))
+    erp = idt.get("codigo_erp")
     descricoes = idt.get("descricoes_em_disputa") or {}
     rotulos = idt.get("rotulos_em_disputa") or {}
+    codigos = [codigo, *(c for c, t in disputa.items() if c == erp or t not in (atual, MESMO))]
     opcoes = []
-    for c in [codigo, *disputa]:
-        t = atual if c == codigo or disputa.get(c) == MESMO else str(disputa.get(c))
-        nome = rotulos.get(c) or (descricoes.get(c) or "").split(" › ")[-1] or "descrição oficial indisponível"
-        opcoes.append(
-            {"valor": c, "rotulo": f"{nome} ({formatar_codigo(tipo, c)})"[:200], "efeito": _tratamento_texto(t)}
-        )
+    for c in codigos:
+        t = atual if c == codigo or disputa.get(c) == MESMO else disputa.get(c)
+        if t is None:
+            beneficio = ent.beneficios_em_disputa.get(c)
+            efeito = "imposto analisado depois da resposta" + (
+                f" (a lei cita este código: {beneficio})" if beneficio else ""
+            )
+        else:
+            efeito = _tratamento_texto(t)
+        nome = rotulos.get(c) or _nome_oficial(descricoes.get(c) or "") or "descrição oficial indisponível"
+        opcoes.append({"valor": c, "rotulo": f"{nome} ({formatar_codigo(tipo, c)})"[:200], "efeito": efeito[:300]})
     opcoes.append({"valor": "outro", "rotulo": "Nenhuma destas", "efeito": "o contador define o código"})
+    conhecidos = all(disputa.get(c) is not None for c in codigos[1:])
     av.perguntas.append(
         PerguntaNecessaria(
             atributo=FATO_CODIGO,
             escopo="item",
-            pergunta="Qual destas descrições corresponde ao item? Cada uma leva a um imposto diferente.",
+            pergunta="Qual destas descrições corresponde ao item? "
+            + ("Cada uma leva a um imposto diferente." if conhecidos else "O imposto depende da resposta."),
             opcoes=opcoes,
-            motivo="O código do item muda o imposto: "
+            motivo=("O código do item muda o imposto: " if conhecidos else "O código do item pode mudar o imposto: ")
             + "; ".join(f"{o['rotulo']} → {o['efeito']}" for o in opcoes[:-1]),
-            grupo="ident:" + "-".join(sorted([codigo, *disputa])),
+            grupo="ident:" + "-".join(sorted(codigos)),
         )
     )
     dims["identificacao"] = Dimensao(
@@ -1036,6 +1059,19 @@ def _pergunta_de_identificacao(
         "Qual código descreve o item? As opções levam a impostos diferentes; a pergunta foi para o operador.",
     )
     dims["codigo_fiscal"] = Dimensao("codigo_fiscal", PENDENTE, "aguarda a resposta sobre o que é o item")
+
+
+_GENERICOS = {"outros", "outras", "outro", "outra", "demais"}
+
+
+def _nome_oficial(desc: str) -> str:
+    """Nome do código pela descrição oficial, para quando a IA não deu um rótulo: o nível mais fundo que não é
+    só "Outros" (ex.: 2005.99.00 → "Outros produtos hortícolas e misturas de produtos hortícolas (outros)")."""
+    partes = [p.strip().rstrip(".:") for p in desc.split(" › ") if p.strip()]
+    for n, parte in enumerate(reversed(partes)):
+        if parte.strip("- ").lower() not in _GENERICOS:
+            return parte + (" (outros)" if n else "")
+    return partes[-1] if partes else ""
 
 
 def _vezes(n: int) -> str:

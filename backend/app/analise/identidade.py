@@ -127,6 +127,12 @@ def consolidar(
                 )
             ),
             "descricoes_em_disputa": {c: descricoes.get(c, "") for c in [codigo_final, *disputa] if c},
+            # Rótulos em linguagem de loja que o Navegador deu às opções (instrução v4), quando houver.
+            "rotulos_em_disputa": {
+                str(o["codigo"]): str(o["rotulo"])
+                for o in [arvore, *(arvore.get("alternativas") or [])]
+                if o.get("codigo") and o.get("rotulo")
+            },
         }
     if arvore is not None and not arvore.get("codigo") and codigo_final and codigo_final == anterior:
         # Nem a prova nem a busca guiada acharam código melhor: o do ERP fica como referência, não confirmado.

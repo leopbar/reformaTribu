@@ -3,6 +3,7 @@ aprovação automática. Também reavalia itens quando um fato novo chega (sem c
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -89,7 +90,13 @@ def entrada(
         base_incompleta=base_incompleta,
         is_exige_analise=bool(cfg.imposto_seletivo_exige_analise) if cfg else True,
         tese_aprovada=bool(tese and tese.aprovada_em),
-        tratamento_alternativas=tratamento_alternativas(session, item, audit, fatos),
+        tratamento_alternativas=(trat := tratamento_alternativas(session, item, audit, fatos)),
+        beneficios_em_disputa=beneficios_citados(
+            session,
+            idt.get("tipo_codigo"),
+            [c for c, t in trat.items() if t is None],
+            (snap.versoes if snap else None) or {},
+        ),
         produtos_na_lei=_produtos_na_lei(session, item, audit),
         operacao=operacao.fundamentar(operacao.hipoteses(aplic.regimes), mat),
         operacao_fatos=operacao.fatos_necessarios(aplic.regimes),
@@ -156,6 +163,47 @@ def tratamento_alternativas(
 
 
 MESMO_TRATAMENTO = "="
+
+
+def _titulo_do_anexo(descricao: str) -> str:
+    """Nome curto do anexo, com a redução: "PRODUTOS HORTÍCOLAS, FRUTAS E OVOS SUBMETIDOS À REDUÇÃO DE 100%…"
+    vira "Produtos hortícolas, frutas e ovos (redução de 100%)"."""
+    texto = " ".join(descricao.split())
+    nome = re.split(r"\s+submetid[oa]s?\b", texto, maxsplit=1, flags=re.IGNORECASE)[0].strip(" ,.;")
+    reducao = re.search(r"redu[çc][ãa]o\s+(de\s+\d+\s*%|a\s+zero)", texto, flags=re.IGNORECASE)
+    return nome.capitalize() + (f" (redução {reducao.group(1).lower()})" if reducao else "")
+
+
+def beneficios_citados(
+    session: Session, tipo: str | None, codigos: list[str], versoes: dict[str, Any]
+) -> dict[str, str]:
+    """Os anexos da lei que a correlação oficial liga a cada código (ex.: "Anexo XV – produtos hortícolas,
+    frutas e ovos"). Explicam ao operador por que a pergunta "o que é este item?" importa quando o imposto
+    de uma opção só se sabe depois de investigar."""
+    from app.analise.evidencias import prefixos
+    from app.reference.importers.lc214 import ROMANOS
+
+    v_cct = versoes.get("cclasstrib")
+    if not tipo or not codigos or not v_cct:
+        return {}
+    saida: dict[str, str] = {}
+    for cod in codigos:
+        rows = session.execute(
+            text(
+                "SELECT DISTINCT nro_anexo, descricao_anexo FROM cclasstrib_correlacoes WHERE version_id = :vc "
+                "AND codigo_ncm_nbs = ANY(:p) AND upper(coalesce(tipo_permissao, '')) <> 'VEDADO' "
+                "AND nro_anexo IS NOT NULL ORDER BY nro_anexo"
+            ),
+            {"vc": uuid.UUID(str(v_cct)), "p": prefixos(cod)},
+        ).all()
+        nomes = [
+            f"Anexo {ROMANOS[r.nro_anexo - 1] if 0 < r.nro_anexo <= len(ROMANOS) else r.nro_anexo}"
+            + (f" – {_titulo_do_anexo(r.descricao_anexo)}" if r.descricao_anexo else "")
+            for r in rows
+        ]
+        if nomes:
+            saida[cod] = "; ".join(nomes)
+    return saida
 
 
 def assinatura_juridica(session: Session, tipo: str, codigo: str, versoes: dict[str, Any]) -> tuple[Any, ...] | None:

@@ -17,7 +17,7 @@ VERSOES_ATIVAS: dict[str, str] = {
     "expandir_abreviacoes": "v1",
     "investigar_enquadramento": "v4",
     "extrair_fatos": "v2",
-    "navegar_arvore": "v3",
+    "navegar_arvore": "v4",
 }
 
 
