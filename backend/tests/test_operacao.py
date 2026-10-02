@@ -195,10 +195,12 @@ def test_espresso_sem_ncm_sai_com_200047():
     assert (av.cclasstrib, av.cst, av.hipotese) == ("200047", "200", "OP-restaurante")
     assert av.perc_red_ibs == 40.0
     dims = av.dimensoes_dict()
-    assert dims["codigo_fiscal"]["situacao"] == "atencao"  # o NCM segue em paralelo
+    # O NCM segue em paralelo, pela lista "Ajustes de cadastro" (ADR 0029): não trava o enquadramento.
+    assert dims["codigo_fiscal"]["situacao"] == "ok"
     assert "não depende" in dims["codigo_fiscal"]["texto"]
+    assert av.ajuste_cadastro["sugerido"] is None
     assert dims["imposto_seletivo"]["situacao"] == "atencao"  # sem NCM, o IS não foi avaliado
-    assert av.status == "revisao_contador"  # alguém precisa definir o NCM da nota
+    assert av.status == "revisao_contador"  # o IS depende do NCM, que alguém precisa definir
     assert any(f["local"] == "Art. 273" for f in av.fundamentos)
 
 

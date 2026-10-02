@@ -8,6 +8,7 @@ export const ROTULO_STATUS_AUDITORIA: Record<string, string> = {
   processando: "Em processamento",
   aguardando_lote: "Aguardando lote da IA",
   pausada_orcamento: "Pausada (orçamento de IA)",
+  pausada_ia: "Pausada (a IA não respondeu)",
   concluida: "Concluída",
   falhou: "Falhou",
   cancelada: "Cancelada",

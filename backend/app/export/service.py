@@ -84,7 +84,12 @@ ROTULO_STATUS = {
     "revisao_especialista": "Revisão do especialista",
 }
 ROTULO_CENARIO = {"venda_consumidor": "Venda ao consumidor"}
-ROTULO_IS = {"sujeito": "Sujeito", "nao_sujeito": "Não sujeito", "indefinido": "A confirmar"}
+ROTULO_IS = {
+    "sujeito": "Sujeito",
+    "na_origem": "Na origem (cobrado na fabricação/importação; não recolhe na revenda)",
+    "nao_sujeito": "Não sujeito",
+    "indefinido": "A confirmar",
+}
 TEMPLATES = Path(__file__).with_name("templates")
 
 
@@ -92,6 +97,18 @@ def _usuarios(session: Session, ids: set[uuid.UUID]) -> dict[uuid.UUID, str]:
     if not ids:
         return {}
     return {u.id: u.nome for u in session.scalars(select(User).where(User.id.in_(ids)))}
+
+
+def _so_revende_seletivo(session: Session, audit: Audit | None) -> bool:
+    """A empresa informou que não fabrica nem importa produtos do Imposto Seletivo (ADR 0029)."""
+    from app.analise import fatos as fatos_mod
+    from app.analise.avaliacao import FATO_IS
+
+    empresa = session.get(Company, audit.company_id) if audit else None
+    if empresa is None:
+        return False
+    fato = fatos_mod.fatos_empresa(session, empresa).get(FATO_IS)
+    return fato is not None and fato.valor == "nao"
 
 
 def linhas_aprovadas(session: Session, audit_id: uuid.UUID, ncm_formatado: bool) -> list[dict[str, Any]]:
@@ -104,6 +121,7 @@ def linhas_aprovadas(session: Session, audit_id: uuid.UUID, ncm_formatado: bool)
     )
     nomes = _usuarios(session, {i.revisado_por for i in itens if i.revisado_por})
     audit = session.get(Audit, audit_id)
+    so_revende = _so_revende_seletivo(session, audit)
     vigencia = audit.data_referencia.strftime("%d/%m/%Y") if audit else ""
     saida = []
     for i in itens:
@@ -142,7 +160,10 @@ def linhas_aprovadas(session: Session, audit_id: uuid.UUID, ncm_formatado: bool)
                 "conclusao": i.conclusao or "",
                 "reducao_ibs": float(i.perc_red_ibs) if i.perc_red_ibs is not None else "",
                 "reducao_cbs": float(i.perc_red_cbs) if i.perc_red_cbs is not None else "",
-                "imposto_seletivo": ROTULO_IS.get(i.is_situacao or "", ""),
+                # A empresa que só revende não recolhe o IS (ADR 0029), mesmo em itens aprovados antes da resposta.
+                "imposto_seletivo": ROTULO_IS.get(
+                    "na_origem" if i.is_situacao == "sujeito" and so_revende else (i.is_situacao or ""), ""
+                ),
                 "vigencia": vigencia,
                 "cenario": ROTULO_CENARIO.get(i.cenario, i.cenario),
                 "descricao_normalizada": (i.identidade or {}).get("descricao_normalizada") or "",

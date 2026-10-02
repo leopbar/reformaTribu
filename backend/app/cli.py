@@ -93,6 +93,8 @@ def ajustar_dimensao_embeddings(dsn: str, dim: int, modelo: str) -> None:
         conn.execute(
             "CREATE INDEX ix_legal_provisions_embedding ON legal_provisions USING hnsw (embedding vector_cosine_ops)"
         )
+        # Itens aprovados por pessoas (ADR 0029): os vetores são recalculados aos poucos, na busca.
+        conn.execute("UPDATE approved_memory SET embedding = NULL")
 
 
 def bootstrap_admin(email: str, nome: str) -> None:

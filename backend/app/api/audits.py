@@ -301,11 +301,20 @@ async def _carregar_auditoria(session: AsyncSession, principal: Principal, audit
     return a
 
 
+# Estados em que a auditoria pode ser iniciada ou retomada (com os modelos escolhidos agora).
+PODE_INICIAR = (
+    StatusAuditoria.PRONTA,
+    StatusAuditoria.PAUSADA_ORCAMENTO,
+    StatusAuditoria.PAUSADA_IA,
+    StatusAuditoria.FALHOU,
+)
+
+
 def estimativa_atual(a: Audit) -> dict[str, Any]:
     """Antes de iniciar, a estimativa acompanha os modelos escolhidos agora em "Modelos de IA"."""
     est = a.estimativa or {}
     previsao = (a.problemas_resumo or {}).get("previsao_ia")
-    if a.status not in (StatusAuditoria.PRONTA, StatusAuditoria.PAUSADA_ORCAMENTO, StatusAuditoria.FALHOU):
+    if a.status not in PODE_INICIAR:
         return est
     if not previsao or a.iniciado_em is not None:
         return est
@@ -487,7 +496,7 @@ async def iniciar_auditoria(
     audit_id: uuid.UUID, dados: IniciarIn, principal: Criar, session: SessionDep
 ) -> AuditoriaOut:
     a = await _carregar_auditoria(session, principal, audit_id)
-    if a.status not in (StatusAuditoria.PRONTA, StatusAuditoria.PAUSADA_ORCAMENTO, StatusAuditoria.FALHOU):
+    if a.status not in PODE_INICIAR:
         raise Conflito("Esta auditoria não pode ser iniciada no estado atual.")
     agentes = await run_in_threadpool(catalogo.agentes_configurados)
     modelos = {k: v["modelo"] for k, v in agentes.items()}

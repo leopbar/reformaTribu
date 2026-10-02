@@ -11,13 +11,13 @@ PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
 
 # Versão ativa de cada prompt. Mudar aqui exige rodar `make eval` (ver docs/avaliacao.md).
 VERSOES_ATIVAS: dict[str, str] = {
-    "julgar_coerencia": "v2",
-    "escalar": "v2",
+    "julgar_coerencia": "v3",
+    "escalar": "v3",
     "extrair_condicoes": "v1",
     "expandir_abreviacoes": "v1",
-    "investigar_enquadramento": "v3",
+    "investigar_enquadramento": "v4",
     "extrair_fatos": "v2",
-    "navegar_arvore": "v2",
+    "navegar_arvore": "v3",
 }
 
 

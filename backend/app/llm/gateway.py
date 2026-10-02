@@ -43,6 +43,13 @@ class ChaveAPIAusente(FalhaIA):
     pass
 
 
+class IAIndisponivel(FalhaIA):
+    """A plataforma de IA não respondeu: sem créditos, fora do ar, limite de uso ou chave recusada.
+
+    Não é dúvida sobre o item: a análise espera a plataforma voltar, em vez de seguir por um caminho
+    de reserva ou mandar o item para uma pessoa (ADR 0029)."""
+
+
 @dataclass(frozen=True)
 class RequisicaoLLM:
     no: str
@@ -281,7 +288,8 @@ def chamar_tempo_real(req: RequisicaoLLM) -> ResultadoLLM:
         if mensagem is None:
             call.status = StatusChamadaLLM.FALHOU
             call.erro = f"{type(ultimo_erro).__name__}: {str(ultimo_erro)[:500]}"
-            falha = FalhaIA(_mensagem_falha(ultimo_erro))
+            classe = IAIndisponivel if plataforma_indisponivel(ultimo_erro) else FalhaIA
+            falha = classe(_mensagem_falha(ultimo_erro))
         else:
             call.request_id = mensagem.get("_request_id")
             registrar_resposta(call, mensagem, lote=False)
@@ -338,10 +346,21 @@ def _resumo_requisicao(req: RequisicaoLLM) -> dict[str, Any]:
     }
 
 
+_SEM_CREDITO = ("credit balance", "insufficient_quota", "insufficient balance", "no credits", "billing")
+
+
+def plataforma_indisponivel(erro: Exception | None) -> bool:
+    """A falha foi da plataforma (não respondeu ou recusou a conta), e não da resposta sobre o item."""
+    if isinstance(erro, provedores.ErroTransitorio):
+        return True
+    texto = str(erro or "").lower()
+    return any(k in texto for k in _SEM_CREDITO) or "401" in texto or "authentication" in texto
+
+
 def _mensagem_falha(erro: Exception | None) -> str:
     texto = str(erro or "").lower()
-    if "credit balance" in texto or "insufficient_quota" in texto or "insufficient balance" in texto:
-        return "A plataforma de IA recusou por falta de créditos. Recarregue os créditos e reanalise o item."
+    if any(k in texto for k in _SEM_CREDITO):
+        return "A plataforma de IA recusou por falta de créditos. Recarregue os créditos: a análise continua sozinha."
     if isinstance(erro, provedores.ErroDefinitivo) and ("401" in texto or "authentication" in texto):
         return "A plataforma de IA recusou a chave de API. Confira a chave em Chaves de API."
     return "Não foi possível obter resposta do modelo após várias tentativas."

@@ -37,6 +37,9 @@ class DecisaoOut(BaseModel):
     perguntas: list[dict[str, Any]]
     motivos: list[str]
     review_id: uuid.UUID | None = None
+    # A mesma decisão aplicada na hora aos itens iguais da auditoria (ADR 0029): desfeita pelo lote.
+    lote_id: uuid.UUID | None = None
+    iguais: int = 0
     mensagem: str
 
 
@@ -75,8 +78,11 @@ class ComentarioIn(BaseModel):
 
 @router.post("/itens/{item_id}/aprovar", response_model=DecisaoOut)
 async def aprovar(item_id: uuid.UUID, dados: ComentarioIn, principal: Revisar, session: SessionDep) -> DecisaoOut:
+    """Aprova o item e, na mesma auditoria, os itens pendentes que pedem a mesma decisão (ADR 0029)."""
     await _item(session, principal, item_id)
-    r = await session.run_sync(lambda s: service.aprovar(s, item_id, _revisor(principal), dados.comentario))
+    r, lote_id, iguais = await session.run_sync(
+        lambda s: service.aprovar_e_aplicar_aos_iguais(s, item_id, _revisor(principal), dados.comentario)
+    )
     i = await _item(session, principal, item_id)
     await registrar(
         session,
@@ -84,9 +90,25 @@ async def aprovar(item_id: uuid.UUID, dados: ComentarioIn, principal: Revisar, s
         Acao.APROVACAO,
         entidade="item",
         entidade_id=item_id,
-        detalhes={"codigo": i.final_codigo, "cclasstrib": i.final_cclasstrib},
+        detalhes={
+            "codigo": i.final_codigo,
+            "cclasstrib": i.final_cclasstrib,
+            **({"iguais": iguais, "lote_id": str(lote_id)} if lote_id else {}),
+        },
     )
-    return _out(i, "Aprovado", r.id)
+    if iguais:
+        await _contadores(i.audit_id, i.org_id, session)
+    msg = "Aprovado" + (f" · a mesma decisão valeu para {iguais} item(ns) iguais" if iguais else "")
+    out = _out(i, msg, r.id)
+    out.lote_id, out.iguais = lote_id, iguais
+    return out
+
+
+async def _contadores(audit_id: uuid.UUID, org_id: uuid.UUID, session: Any) -> None:
+    await session.commit()
+    from app.audits.processing import atualizar_contadores
+
+    await run_in_threadpool(atualizar_contadores, audit_id, org_id)
 
 
 class EdicaoIn(BaseModel):
@@ -369,6 +391,226 @@ async def aprovar_lote(audit_id: uuid.UUID, dados: LoteIn, principal: Revisar, s
         },
     )
     return LoteOut(total=len(itens), aprovados=n, lote_id=lote_id, amostra=amostra, mensagem=f"{n} itens aprovados")
+
+
+# ======================================================================= revisão por grupo (ADR 0029) ==
+class GrupoRevisaoOut(BaseModel):
+    chave: str
+    status: str
+    tipo_codigo: str | None
+    codigo: str | None
+    codigo_formatado: str | None
+    descricao_oficial: str | None
+    cst: str | None
+    cclasstrib: str | None
+    imposto_seletivo: str | None
+    motivo: str
+    itens: int
+    item_ids: list[uuid.UUID]
+    amostra: list[str]
+
+
+@router.get("/auditorias/{audit_id}/revisao/grupos", response_model=list[GrupoRevisaoOut])
+async def grupos_revisao(audit_id: uuid.UUID, principal: Revisar, session: SessionDep) -> list[GrupoRevisaoOut]:
+    """Itens pendentes de revisão agrupados pela decisão que pedem: uma decisão resolve o grupo inteiro."""
+    await _carregar_auditoria(session, principal, audit_id)
+    grupos = await session.run_sync(lambda s: service.grupos_de_revisao(s, audit_id))
+    return [GrupoRevisaoOut(**{**g.__dict__, "itens": len(g.item_ids)}) for g in grupos]
+
+
+class AjusteCadastroOut(BaseModel):
+    item_id: uuid.UUID
+    linha: int
+    descricao: str
+    tipo_codigo: str
+    erp: str | None
+    erp_formatado: str | None
+    sugerido: str | None
+    sugerido_formatado: str | None
+    alternativas: list[str]
+    cclasstrib: str | None
+    texto: str
+    status: str | None
+    revisao_status: str
+
+
+@router.get("/auditorias/{audit_id}/ajustes-cadastro", response_model=list[AjusteCadastroOut])
+async def ajustes_cadastro(
+    audit_id: uuid.UUID, principal: Revisar, session: SessionDep, status: str | None = "pendente"
+) -> list[AjusteCadastroOut]:
+    """NCM/NBS a confirmar no cadastro sem mudar o IBS/CBS (ADR 0029). `status=todos` lista também os decididos."""
+    from sqlalchemy import select
+
+    from app.core.codes import formatar_codigo
+
+    await _carregar_auditoria(session, principal, audit_id)
+    q = select(AuditItem).where(
+        AuditItem.audit_id == audit_id, AuditItem.ignorado.is_(False), AuditItem.ajuste_cadastro_status.is_not(None)
+    )
+    if status and status != "todos":
+        q = q.where(AuditItem.ajuste_cadastro_status == status)
+    saida = []
+    for i in await session.scalars(q.order_by(AuditItem.linha)):
+        a = i.ajuste_cadastro or {}
+        tipo = a.get("tipo_codigo") or "ncm"
+        saida.append(
+            AjusteCadastroOut(
+                item_id=i.id,
+                linha=i.linha,
+                descricao=i.descricao,
+                tipo_codigo=tipo,
+                erp=a.get("erp"),
+                erp_formatado=formatar_codigo(tipo, a["erp"]) if a.get("erp") else None,
+                sugerido=a.get("sugerido"),
+                sugerido_formatado=formatar_codigo(tipo, a["sugerido"]) if a.get("sugerido") else None,
+                alternativas=[formatar_codigo(tipo, c) for c in a.get("alternativas") or []],
+                cclasstrib=i.final_cclasstrib or i.cclasstrib_sugerido,
+                texto=a.get("texto") or "",
+                status=i.ajuste_cadastro_status,
+                revisao_status=i.revisao_status,
+            )
+        )
+    return saida
+
+
+class AjusteCadastroIn(BaseModel):
+    item_ids: list[uuid.UUID] = Field(min_length=1, max_length=50000)
+    acao: str = Field(pattern="^(aceitar|manter|reabrir)$")
+    comentario: str | None = Field(None, max_length=2000)
+
+
+class AjusteCadastroResultado(BaseModel):
+    alterados: int
+    mensagem: str
+
+
+@router.post("/auditorias/{audit_id}/ajustes-cadastro", response_model=AjusteCadastroResultado)
+async def decidir_ajustes_cadastro(
+    audit_id: uuid.UUID, dados: AjusteCadastroIn, principal: Revisar, session: SessionDep
+) -> AjusteCadastroResultado:
+    """Aceita o código sugerido, mantém o do ERP ou reabre a sugestão, para vários itens de uma vez."""
+    a = await _carregar_auditoria(session, principal, audit_id)
+    n = await session.run_sync(
+        lambda s: service.decidir_ajustes_cadastro(
+            s, audit_id, dados.item_ids, dados.acao, _revisor(principal), dados.comentario
+        )
+    )
+    await registrar(
+        session,
+        principal,
+        Acao.EDICAO,
+        entidade="auditoria",
+        entidade_id=audit_id,
+        detalhes={"ajustes_cadastro": dados.acao, "itens": n},
+    )
+    await _contadores(audit_id, a.org_id, session)
+    rotulo = {"aceitar": "sugestão aceita", "manter": "NCM do ERP mantido", "reabrir": "reaberto"}[dados.acao]
+    return AjusteCadastroResultado(alterados=n, mensagem=f"{n} item(ns): {rotulo}.")
+
+
+# ========================================================== reaplicar as regras atuais (sem IA) ==
+class ReaplicarIn(BaseModel):
+    reanalisar_falhas: bool = False  # itens que esbarraram na plataforma de IA voltam para a fila
+
+
+class ReaplicarOut(BaseModel):
+    reaplicados: int
+    mantidos: int
+    falhas_de_ia: int
+    enviados_para_reanalise: int
+    em_segundo_plano: bool
+    mensagem: str
+
+
+LIMITE_REAPLICAR_IMEDIATO = 400
+
+
+@router.post("/auditorias/{audit_id}/reaplicar", response_model=ReaplicarOut)
+async def reaplicar(audit_id: uuid.UUID, dados: ReaplicarIn, principal: Revisar, session: SessionDep) -> ReaplicarOut:
+    """Refaz a decisão dos itens com as regras atuais, a partir das respostas da IA já gravadas (ADR 0029).
+    Não chama a IA nem gera custo; decisões de pessoas ficam como estão."""
+    from sqlalchemy import select
+
+    from app.audits.processing import enfileirar_itens
+    from app.evals.replay import falha_de_infraestrutura
+
+    a = await _carregar_auditoria(session, principal, audit_id)
+    if a.status not in (StatusAuditoria.CONCLUIDA, StatusAuditoria.PAUSADA_IA):
+        raise Conflito("Só é possível reaplicar as regras em auditorias concluídas.")
+    ids = list(
+        await session.scalars(select(AuditItem.id).where(AuditItem.audit_id == audit_id, AuditItem.ignorado.is_(False)))
+    )
+    if len(ids) > LIMITE_REAPLICAR_IMEDIATO:
+        await session.commit()
+        celery_app.send_task(
+            "analise.reaplicar_auditoria",
+            args=[str(audit_id), str(a.org_id), dados.reanalisar_falhas],
+            queue="pipeline",
+        )
+        return ReaplicarOut(
+            reaplicados=0,
+            mantidos=0,
+            falhas_de_ia=0,
+            enviados_para_reanalise=0,
+            em_segundo_plano=True,
+            mensagem=f"{len(ids)} itens serão reavaliados em segundo plano com as regras atuais (sem IA).",
+        )
+
+    def _f(s: Any) -> tuple[int, int, list[uuid.UUID]]:
+        from app.analise.aplicacao import reaplicar_item
+
+        feitos = mantidos = 0
+        falhas: list[uuid.UUID] = []
+        for item in s.scalars(select(AuditItem).where(AuditItem.id.in_(ids))):
+            if falha_de_infraestrutura(s, item) and item.revisao_status != StatusRevisao.APROVADO:
+                falhas.append(item.id)
+                continue
+            r = reaplicar_item(s, item)
+            if r == "reaplicado":
+                feitos += 1
+            elif r == "reanalisar":
+                falhas.append(item.id)  # parecer refeito: precisa levantar os fatos de novo (IA)
+            else:
+                mantidos += 1
+        return feitos, mantidos, falhas
+
+    feitos, mantidos, falhas = await session.run_sync(_f)
+    enviados = 0
+    if dados.reanalisar_falhas and falhas:
+        for i in await session.scalars(select(AuditItem).where(AuditItem.id.in_(falhas))):
+            i.tentativa += 1
+            i.status, i.etapa, i.motivos, i.perguntas = StatusItem.PENDENTE, None, [], []
+            i.aprovado_automaticamente = False
+            if i.revisao_status == StatusRevisao.APROVADO:
+                i.revisao_status = StatusRevisao.PENDENTE
+        a.status, a.modo = StatusAuditoria.PROCESSANDO, "tempo_real"
+        enviados = len(falhas)
+    await registrar(
+        session,
+        principal,
+        Acao.ITEM_REPROCESSADO,
+        entidade="auditoria",
+        entidade_id=audit_id,
+        detalhes={"reaplicar_regras": feitos, "falhas_de_ia": len(falhas), "reanalise": enviados},
+    )
+    await _contadores(audit_id, a.org_id, session)
+    if enviados:
+        enfileirar_itens(a.id, a.org_id, falhas)
+    msg = f"{feitos} item(ns) reavaliados com as regras atuais, sem IA."
+    if mantidos:
+        msg += f" {mantidos} ficaram como estavam (decisão de pessoa que as regras não confirmam, ou sem análise)."
+    if falhas:
+        msg += f" {len(falhas)} precisam da IA (falha da plataforma ou parecer refeito) e " + (
+            "voltaram para a fila." if enviados else "podem ser reanalisados agora."
+        )
+    return ReaplicarOut(
+        reaplicados=feitos,
+        mantidos=mantidos,
+        falhas_de_ia=len(falhas),
+        enviados_para_reanalise=enviados,
+        em_segundo_plano=False,
+        mensagem=msg,
+    )
 
 
 @router.post("/auditorias/{audit_id}/lotes/{lote_id}/desfazer", response_model=LoteOut)

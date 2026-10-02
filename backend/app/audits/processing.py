@@ -14,7 +14,7 @@ from app.core.audit_trail import Acao, registrar_sync
 from app.db.session import TenantContext, sync_tenant_session
 from app.events import bus
 from app.llm.budget import OrcamentoExcedido
-from app.llm.gateway import ChaveAPIAusente
+from app.llm.gateway import ChaveAPIAusente, IAIndisponivel
 from app.models import Audit, AuditItem, Notification
 from app.models.enums import STATUS_FINAIS, StatusAuditoria, StatusItem
 from app.pipeline.context import carregar_contexto
@@ -71,6 +71,7 @@ def processar_itens(audit_id: uuid.UUID, org_id: uuid.UUID, item_ids: list[uuid.
     # Recarrega a cada bloco: mudanças de configuração (ex.: "refazer pareceres") valem logo.
     ctx = carregar_contexto(audit_id, org_id, forcar=True)
     aguardando: list[uuid.UUID] = []
+    concluidos = 0
     for item_id in item_ids:
         if item_id not in tentativas:
             continue
@@ -78,11 +79,18 @@ def processar_itens(audit_id: uuid.UUID, org_id: uuid.UUID, item_ids: list[uuid.
             resultado = processar_item(item_id, tentativas[item_id], ctx)
             if resultado == AGUARDANDO_LOTE:
                 aguardando.append(item_id)
+            elif concluidos == 0:
+                limpar_pausa_ia(audit_id, org_id)
+            concluidos += 1
         except OrcamentoExcedido as e:
             pausar_por_orcamento(audit_id, org_id, str(e))
             return
         except ChaveAPIAusente as e:
             falhar_auditoria(audit_id, org_id, str(e))
+            return
+        except IAIndisponivel as e:
+            # Falha da plataforma, não do item: o item fica onde parou e a auditoria retoma sozinha.
+            pausar_por_ia(audit_id, org_id, str(e))
             return
         except Exception as e:
             log.exception("item_falhou", item=str(item_id))
@@ -145,10 +153,18 @@ def atualizar_contadores(audit_id: uuid.UUID, org_id: uuid.UUID) -> dict[str, An
             text("SELECT count(DISTINCT thesis_id) FROM audit_items WHERE audit_id = :a AND thesis_id IS NOT NULL"),
             {"a": audit_id},
         )
+        ajustes = sess.scalar(
+            text(
+                "SELECT count(*) FROM audit_items WHERE audit_id = :a AND NOT ignorado "
+                "AND ajuste_cadastro_status = 'pendente'"
+            ),
+            {"a": audit_id},
+        )
         contadores = {
             "perguntas_abertas": int(perguntas[0]),
             "itens_em_perguntas": int(perguntas[1]),
             "familias": int(familias or 0),
+            "ajustes_cadastro": int(ajustes or 0),
             "por_status": dict(por_status),
             "por_etapa": dict(por_etapa),
             "motivos": {m: int(n) for m, n in motivos},
@@ -178,6 +194,7 @@ def concluir_se_terminado(audit_id: uuid.UUID, org_id: uuid.UUID) -> bool:
             StatusAuditoria.CANCELADA,
             StatusAuditoria.FALHOU,
             StatusAuditoria.PAUSADA_ORCAMENTO,
+            StatusAuditoria.PAUSADA_IA,
         ):
             return False
         restantes = sess.scalar(
@@ -232,6 +249,85 @@ def pausar_por_orcamento(audit_id: uuid.UUID, org_id: uuid.UUID, mensagem: str) 
             detalhes={"evento": "bloqueio", "mensagem": mensagem},
         )
     bus.publicar(audit_id, "status", {"status": "pausada_orcamento", "mensagem": mensagem})
+
+
+# Espera antes de tentar de novo, dobrando a cada pausa seguida (minutos): 10, 20, 40, 80, 120…
+ESPERA_IA_MIN = 10
+ESPERA_IA_MAX = 120
+
+
+def pausar_por_ia(audit_id: uuid.UUID, org_id: uuid.UUID, mensagem: str) -> None:
+    """A plataforma de IA não respondeu (ADR 0029). Nenhum item vai para revisão por isso: a auditoria
+    pausa e é retomada sozinha pela tarefa periódica, com espera crescente."""
+    with sync_tenant_session(TenantContext.sistema(org_id)) as sess:
+        audit = sess.get(Audit, audit_id)
+        if audit is None or audit.status == StatusAuditoria.PAUSADA_IA:
+            return
+        pausa = dict((audit.configuracao or {}).get("pausa_ia") or {})
+        seguidas = int(pausa.get("seguidas") or 0) + 1
+        espera = min(ESPERA_IA_MIN * 2 ** (seguidas - 1), ESPERA_IA_MAX)
+        proxima = datetime.now(UTC) + timedelta(minutes=espera)
+        audit.configuracao = {
+            **(audit.configuracao or {}),
+            "pausa_ia": {"seguidas": seguidas, "proxima": proxima.isoformat(), "mensagem": mensagem[:300]},
+        }
+        audit.status = StatusAuditoria.PAUSADA_IA
+        audit.erro = f"{mensagem} Nova tentativa automática às {proxima.astimezone().strftime('%H:%M')}."
+        if seguidas == 1:
+            sess.add(
+                Notification(
+                    org_id=org_id,
+                    user_id=audit.created_by,
+                    tipo="ia_indisponivel",
+                    titulo="Auditoria pausada: a plataforma de IA não respondeu",
+                    mensagem=f"“{audit.nome}”: {mensagem} Os itens não foram mandados para revisão; a análise "
+                    "continua sozinha quando a plataforma voltar.",
+                    link=f"/auditorias/{audit_id}",
+                )
+            )
+    bus.publicar(audit_id, "status", {"status": "pausada_ia", "mensagem": mensagem})
+
+
+def retomar_pausadas_por_ia(org_id: uuid.UUID, forcar: bool = False) -> int:
+    """Retoma as auditorias pausadas por falha da IA cuja espera venceu (ou todas, com `forcar`)."""
+    agora = datetime.now(UTC)
+    retomar: list[tuple[uuid.UUID, list[uuid.UUID]]] = []
+    with sync_tenant_session(TenantContext.sistema(org_id)) as sess:
+        for audit in sess.scalars(select(Audit).where(Audit.status == StatusAuditoria.PAUSADA_IA)):
+            pausa = (audit.configuracao or {}).get("pausa_ia") or {}
+            proxima = pausa.get("proxima")
+            if not forcar and proxima and datetime.fromisoformat(proxima) > agora:
+                continue
+            ids = list(
+                sess.scalars(
+                    select(AuditItem.id)
+                    .where(
+                        AuditItem.audit_id == audit.id,
+                        AuditItem.ignorado.is_(False),
+                        AuditItem.status.notin_(list(FINAIS)),
+                    )
+                    .order_by(AuditItem.linha)
+                )
+            )
+            audit.status = StatusAuditoria.PROCESSANDO
+            audit.erro = None
+            retomar.append((audit.id, ids))
+    for audit_id, ids in retomar:
+        log.info("retomando_apos_falha_ia", auditoria=str(audit_id), itens=len(ids))
+        bus.publicar(audit_id, "status", {"status": "processando", "total": len(ids)})
+        if ids:
+            enfileirar_itens(audit_id, org_id, ids)
+        else:
+            concluir_se_terminado(audit_id, org_id)
+    return len(retomar)
+
+
+def limpar_pausa_ia(audit_id: uuid.UUID, org_id: uuid.UUID) -> None:
+    """Um item passou pela IA: zera a contagem de pausas seguidas."""
+    with sync_tenant_session(TenantContext.sistema(org_id)) as sess:
+        audit = sess.get(Audit, audit_id)
+        if audit is not None and (audit.configuracao or {}).get("pausa_ia"):
+            audit.configuracao = {k: v for k, v in (audit.configuracao or {}).items() if k != "pausa_ia"}
 
 
 def falhar_auditoria(audit_id: uuid.UUID, org_id: uuid.UUID, mensagem: str) -> None:

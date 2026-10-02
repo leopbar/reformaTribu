@@ -27,8 +27,9 @@ from app.pipeline.state import ItemState
 
 log = structlog.get_logger()
 
-# Com até este número de códigos finais sob o nível escolhido, pula direto para eles.
-MAX_FOLHAS_DIRETAS = 60
+# Com até este número de códigos finais sob o nível escolhido, pula direto para eles. Listas longas escondem
+# o código certo (ADR 0029: os 51 códigos do capítulo 16, quase todos de peixe, esconderam o de frango).
+MAX_FOLHAS_DIRETAS = 25
 MAX_OPCOES = 150
 MAX_CAPITULOS = 3  # capítulos tentados quando o anterior não tem código que sirva
 
@@ -128,7 +129,7 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
         )
         try:
             res = _executar(req, ctx)
-        except gateway.ChaveAPIAusente:
+        except (gateway.ChaveAPIAusente, gateway.IAIndisponivel):
             raise
         except gateway.FalhaIA as e:
             log.warning("navegacao_falhou", item=state.item_id, nivel=nivel, erro=str(e))

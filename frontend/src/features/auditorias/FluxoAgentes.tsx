@@ -10,6 +10,7 @@ import {
   CircleHelp,
   ClipboardCheck,
   FileInput,
+  FileSpreadsheet,
   FileSearch,
   Gavel,
   Hand,
@@ -20,7 +21,7 @@ import {
   ShieldCheck,
   Split,
   Stethoscope,
-  UserRound,
+  UserCheck,
   type LucideIcon,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -28,10 +29,10 @@ import { api, ok } from "@/api/client";
 import type { components } from "@/api/schema";
 import { EstadoErro, STATUS, type StatusItem } from "@/components/dominio";
 import { Skeleton } from "@/components/ui/primitives";
-import { fmtNum, fmtUSD as fmtUSDBase } from "@/lib/format";
+import { fmtUSD as fmtUSDBase } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-type Custo = "gratis" | "ia" | "voce";
+export type Custo = "gratis" | "talvez" | "ia" | "voce";
 type Agente = {
   nome: string;
   papel: string;
@@ -81,7 +82,7 @@ export const AGENTES: Record<string, Agente> = {
     nome: "Arrumador",
     papel: "limpa a descrição",
     faz: "Tira a marca, acentos e abreviações para deixar a descrição legível.",
-    custo: "gratis",
+    custo: "talvez",
     icone: FileInput,
   },
   fiscal: {
@@ -154,43 +155,31 @@ export const AGENTES: Record<string, Agente> = {
     custo: "gratis",
     icone: MailQuestion,
   },
+  revisao: {
+    nome: "Mesa de revisão",
+    papel: "pessoas decidem",
+    faz: "O contador confere dúvidas de NCM e avisos; o especialista decide conflitos jurídicos. Toda aprovação vira memória.",
+    custo: "voce",
+    icone: UserCheck,
+  },
+  exportacao: {
+    nome: "Exportação",
+    papel: "monta a planilha final",
+    faz: "Gera a planilha com NCM, CST, cClassTrib e fundamento legal de cada item, pronta para o ERP.",
+    custo: "gratis",
+    icone: FileSpreadsheet,
+  },
 };
 
 /** Custos de uma chamada costumam ser frações de centavo: mostra "< US$ 0,01" em vez de zero. */
-function fmtUSD(v: number | null | undefined): string {
+export function fmtUSD(v: number | null | undefined): string {
   const n = Number(v ?? 0);
   return n > 0 && n < 0.01 ? "< US$ 0,01" : fmtUSDBase(n);
 }
 
-const PLANILHA = [
-  "recepcionista",
-  "conferente",
-  "orcamentista",
-  "voce",
-  "distribuidor",
-];
-const POR_ITEM = [
-  "arrumador",
-  "fiscal",
-  "arquivista",
-  "pesquisador",
-  "identificador",
-  "segundo_parecer",
-  "navegador",
-  "jurista",
-  "leitor",
-  "juiz",
-  "secretario",
-];
-const RESULTADOS: StatusItem[] = [
-  "classificado",
-  "aguardando_informacao",
-  "revisao_contador",
-  "revisao_especialista",
-];
-
-const CUSTO: Record<Custo, { rotulo: string; classe: string }> = {
+export const CUSTO: Record<Custo, { rotulo: string; classe: string }> = {
   gratis: { rotulo: "grátis · sem IA", classe: "border-regua text-tinta-3" },
+  talvez: { rotulo: "grátis · IA leve às vezes", classe: "border-regua text-tinta-3" },
   ia: {
     rotulo: "IA",
     classe: "border-caneta/40 bg-caneta-suave text-caneta",
@@ -207,7 +196,7 @@ function nomeModelo(modelo: unknown): string {
   return m;
 }
 
-function SeloCusto({ custo, modelo }: { custo: Custo; modelo?: unknown }) {
+export function SeloCusto({ custo, modelo }: { custo: Custo; modelo?: unknown }) {
   const c = CUSTO[custo];
   return (
     <span
@@ -221,7 +210,7 @@ function SeloCusto({ custo, modelo }: { custo: Custo; modelo?: unknown }) {
   );
 }
 
-function Legenda() {
+export function Legenda() {
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-2xs text-tinta-3">
       <span className="flex items-center gap-1.5">
@@ -539,324 +528,5 @@ function SeloResultado({ status }: { status: string }) {
     >
       <Icone className="size-4" aria-hidden /> {s.rotulo}
     </span>
-  );
-}
-
-// =============================================================== visão geral (auditoria) ==
-type Fluxo = components["schemas"]["FluxoOut"];
-type CaixaResumo = components["schemas"]["CaixaResumo"];
-
-/** O escritório inteiro: quantos itens passaram por cada agente, quantos estão lá agora e quanto custou. */
-export function FluxoAuditoria({ auditId }: { auditId: string }) {
-  const q = useQuery({
-    queryKey: ["fluxo", auditId],
-    queryFn: () =>
-      ok(
-        api.GET("/api/auditorias/{audit_id}/fluxo", {
-          params: { path: { audit_id: auditId } },
-        }),
-      ),
-    refetchInterval: (qq) => (qq.state.data?.ao_vivo ? 3000 : false),
-  });
-  const [aberta, setAberta] = useState<string | null>(null);
-  if (q.isError)
-    return <EstadoErro erro={q.error} aoTentar={() => void q.refetch()} />;
-  if (!q.data) return <Skeleton className="h-[40rem]" />;
-  const f: Fluxo = q.data;
-  const cx = (k: string): CaixaResumo =>
-    f.caixas[k] ?? {
-      passaram: 0,
-      agora: 0,
-      custo_usd: 0,
-      chamadas: 0,
-      destaques: [],
-    };
-  const alternar = (k: string) => setAberta((v) => (v === k ? null : k));
-
-  return (
-    <div className="flex flex-col gap-5">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-        {f.ao_vivo ? (
-          <span className="inline-flex items-center gap-1.5 font-medium text-caneta">
-            <span
-              className="size-2 animate-ping rounded-full bg-caneta"
-              aria-hidden
-            />{" "}
-            Ao vivo · atualiza a cada 3 segundos
-          </span>
-        ) : null}
-        <span>
-          <b className="num">{fmtNum(f.concluidos)}</b> de{" "}
-          <b className="num">{fmtNum(f.total)}</b> itens concluídos
-        </span>
-        <span>
-          Custo total: <b className="num">{fmtUSD(f.custo_usd)}</b>
-        </span>
-        <span className="text-2xs text-tinta-3">
-          Clique numa caixa para ver os números dela. Para ver o caminho de um
-          item, abra o item e escolha “Caminho pelos agentes”.
-        </span>
-      </div>
-      <Legenda />
-
-      <section>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-tinta-3">
-          1 · A planilha inteira (uma vez por arquivo)
-        </h3>
-        <div className="flex flex-col items-stretch gap-2 xl:flex-row xl:items-start">
-          {PLANILHA.map((k, i) => (
-            <div
-              key={k}
-              className="flex flex-col items-center gap-2 xl:flex-1 xl:flex-row"
-            >
-              <CaixaGeral
-                chave={k}
-                dados={cx(k)}
-                aberta={aberta === k}
-                aoClicar={() => alternar(k)}
-                total={f.total}
-              />
-              {i < PLANILHA.length - 1 ? <Seta horizontal /> : null}
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <div className="flex justify-center">
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-regua bg-superficie-2 px-3 py-1 text-2xs text-tinta-2">
-          <ArrowDown className="size-3" aria-hidden /> cada ficha segue sozinha
-          pelo roteiro abaixo
-        </span>
-      </div>
-
-      <section>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-tinta-3">
-          2 · Cada item (o roteiro do Gerente)
-        </h3>
-        <div className="mx-auto flex max-w-3xl flex-col items-stretch">
-          {POR_ITEM.map((k, i) => (
-            <div key={k} className="flex flex-col items-stretch">
-              <div
-                className={cn(
-                  k === "segundo_parecer" && "sm:ml-12",
-                  k === "secretario" && "sm:ml-12",
-                  k === "navegador" && "sm:ml-12",
-                )}
-              >
-                {k === "segundo_parecer" ? (
-                  <Desvio texto="só quando toca um alarme" />
-                ) : null}
-                {k === "secretario" ? (
-                  <Desvio texto="só quando falta informação" />
-                ) : null}
-                {k === "navegador" ? (
-                  <Desvio texto="só quando o item ficou sem NCM" />
-                ) : null}
-                <CaixaGeral
-                  chave={k}
-                  dados={cx(k)}
-                  aberta={aberta === k}
-                  aoClicar={() => alternar(k)}
-                  total={f.total}
-                  modelo={f.modelos?.[k]}
-                />
-              </div>
-              {i < POR_ITEM.length - 1 ? <Atalhos chave={k} f={f} /> : null}
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-tinta-3">
-          3 · Onde cada item terminou
-        </h3>
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          {RESULTADOS.map((st) => {
-            const s = STATUS[st];
-            const Icone = s.icone;
-            return (
-              <div
-                key={st}
-                className={cn("rounded-lg border px-3 py-2", s.fundo, s.borda)}
-              >
-                <p
-                  className={cn(
-                    "flex items-center gap-1.5 text-sm font-medium",
-                    s.cor,
-                  )}
-                >
-                  <Icone className="size-4" aria-hidden /> {s.rotulo}
-                </p>
-                <p className="num mt-1 text-2xl font-semibold">
-                  {fmtNum(f.resultados[st] ?? 0)}
-                </p>
-                <p className="text-2xs text-tinta-3">{QUEM_RESOLVE[st]}</p>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-const QUEM_RESOLVE: Record<string, string> = {
-  classificado: "ninguém precisa fazer nada",
-  aguardando_informacao: "você responde na aba Perguntas",
-  revisao_contador: "o contador confere",
-  revisao_especialista: "o especialista tributário decide",
-};
-
-function Seta({ horizontal }: { horizontal?: boolean }) {
-  return horizontal ? (
-    <>
-      <ArrowDown
-        className="size-4 shrink-0 text-regua-forte xl:hidden"
-        aria-hidden
-      />
-      <ArrowRight
-        className="hidden size-4 shrink-0 text-regua-forte xl:block"
-        aria-hidden
-      />
-    </>
-  ) : (
-    <ArrowDown className="mx-auto my-1 size-4 text-regua-forte" aria-hidden />
-  );
-}
-
-function Desvio({ texto }: { texto: string }) {
-  return <p className="mb-1 text-2xs italic text-tinta-3">↳ desvio: {texto}</p>;
-}
-
-/** Setas entre as caixas, com os atalhos do roteiro (quantos itens pularam caixas). */
-function Atalhos({ chave, f }: { chave: string; f: Fluxo }) {
-  const d = (k: string, rotulo: string) =>
-    Number(
-      f.caixas[k]?.destaques
-        ?.find((x) => x.rotulo === rotulo)
-        ?.valor?.replace(/\./g, "") ?? 0,
-    );
-  const atalhos: string[] = [];
-  if (chave === "arquivista") {
-    const n = d("arquivista", "Achou no caderno (pula a identificação)");
-    if (n) atalhos.push(`${fmtNum(n)} já conhecidos pularam direto ao Jurista`);
-  }
-  if (chave === "pesquisador") {
-    const n = d("pesquisador", "Atalho: confirmados sem IA");
-    if (n)
-      atalhos.push(`${fmtNum(n)} confirmados sem IA pularam direto ao Jurista`);
-  }
-  if (chave === "fiscal") {
-    const n = d("fiscal", "Base oficial incompleta");
-    if (n)
-      atalhos.push(
-        `${fmtNum(n)} foram direto ao Juiz (base oficial incompleta)`,
-      );
-  }
-  return (
-    <div className="flex items-center justify-center gap-2 py-1">
-      <ArrowDown className="size-4 text-regua-forte" aria-hidden />
-      {atalhos.map((a) => (
-        <span
-          key={a}
-          className="rounded-full border border-dashed border-conferido/50 px-2 py-px text-2xs text-conferido"
-        >
-          atalho: {a}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function CaixaGeral({
-  chave,
-  dados,
-  aberta,
-  aoClicar,
-  total,
-  modelo,
-}: {
-  chave: string;
-  dados: CaixaResumo;
-  aberta: boolean;
-  aoClicar: () => void;
-  total: number;
-  modelo?: string;
-}) {
-  const ag = AGENTES[chave];
-  const Icone = ag?.icone ?? UserRound;
-  const agora = dados.agora ?? 0;
-  const parcela = total
-    ? Math.min(100, Math.round(((dados.passaram ?? 0) / total) * 100))
-    : 0;
-  return (
-    <button
-      onClick={aoClicar}
-      aria-expanded={aberta}
-      className={cn(
-        "relative w-full min-w-0 rounded-lg border bg-superficie px-3 py-2 text-left transition-colors hover:border-regua-forte",
-        agora > 0 ? "border-caneta shadow-sm" : "border-regua",
-        aberta && "ring-2 ring-foco",
-      )}
-    >
-      {agora > 0 ? (
-        <span className="absolute -top-2 right-2 inline-flex items-center gap-1 rounded-full bg-caneta px-2 py-px text-2xs font-semibold text-white">
-          <span
-            className="size-1.5 animate-ping rounded-full bg-white"
-            aria-hidden
-          />{" "}
-          {fmtNum(agora)} aqui agora
-        </span>
-      ) : null}
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <Icone className="size-4 text-tinta-2" aria-hidden />
-        <span className="text-sm font-semibold">{ag?.nome ?? chave}</span>
-        <span className="text-2xs text-tinta-3">{ag?.papel}</span>
-        {ag ? <SeloCusto custo={ag.custo} modelo={modelo} /> : null}
-      </div>
-      <p className="mt-1 text-xs text-tinta-2">{ag?.faz}</p>
-      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-tinta-3">
-        <span>
-          <b className="num text-sm text-tinta">
-            {fmtNum(dados.passaram ?? 0)}
-          </b>{" "}
-          {chave === "jurista" ? "itens com parecer" : "passaram"}
-        </span>
-        {dados.chamadas ? (
-          <span>
-            <b className="num text-tinta-2">{fmtNum(dados.chamadas)}</b>{" "}
-            chamadas de IA ·{" "}
-            <b className="num text-tinta-2">{fmtUSD(dados.custo_usd ?? 0)}</b>
-          </span>
-        ) : null}
-      </div>
-      <div
-        className="mt-1.5 h-1 overflow-hidden rounded-full bg-superficie-3"
-        aria-hidden
-      >
-        <div
-          className={cn(
-            "h-full rounded-full",
-            ag?.custo === "ia"
-              ? "bg-caneta"
-              : "bg-conferido",
-          )}
-          style={{ width: `${parcela}%` }}
-        />
-      </div>
-      {aberta && dados.destaques?.length ? (
-        <dl className="mt-2 grid gap-1 border-t border-regua pt-2 text-xs">
-          {dados.destaques.map((x, i) => (
-            <div key={i} className="flex justify-between gap-3">
-              <dt className="text-tinta-3">{x.rotulo}</dt>
-              <dd className="num text-right font-medium text-tinta-2">
-                {x.valor}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      ) : null}
-    </button>
   );
 }

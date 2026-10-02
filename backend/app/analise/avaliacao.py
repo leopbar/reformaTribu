@@ -8,14 +8,19 @@
    - falta um fato → a hipótese continua possível: se as alternativas que restam levam a
      enquadramentos diferentes, nasce uma pergunta ("se A → X, se B → Y").
 2. Monta o relatório de confiança por dimensão, sem número mágico.
-3. Decide o status e o nível de revisão.
+3. Compara a conclusão com o que as pessoas já decidiram para o mesmo código, cenário e ramo
+   (memória de decisões, ADR 0028): reforça ou contesta o resultado.
+4. Decide o status e o nível de revisão.
 """
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from app.analise import decisoes as decisoes_mod
 from app.analise.fatos import DESCONHECIDO, chave, valor
 from app.analise.operacao import ORIGEM as ORIGEM_OPERACAO
 from app.analise.operacao import cclasstrib_da_operacao
@@ -39,6 +44,31 @@ DIMENSOES: tuple[tuple[str, str], ...] = (
 ROTULOS = dict(DIMENSOES)
 _CCLASSTRIB_OPERACAO = cclasstrib_da_operacao()
 
+# Fato do dossiê que decide se o Imposto Seletivo é recolhido pela empresa (ADR 0029). O IS incide uma
+# única vez, na fabricação ou na importação (LC 214/2025, arts. 409 e 412): quem só revende não recolhe.
+FATO_IS = "fabrica_ou_importa_seletivo"
+PERGUNTA_IS = (
+    "A empresa fabrica ou importa algum produto sujeito ao Imposto Seletivo (bebidas alcoólicas, bebidas "
+    "açucaradas, cigarros, veículos, embarcações, armas)?"
+)
+# Pergunta "o que é este item?" quando os códigos possíveis têm tratamentos diferentes (ADR 0029).
+FATO_CODIGO = "codigo_do_item"
+MESMO = "="  # o código alternativo tem a mesma assinatura jurídica do escolhido
+NBS_ALIMENTACAO = "10301"  # NBS 1.0301: fornecimento de alimentação, incluindo refeições
+# Palavras do nome oficial do cClassTrib que indicam outro cenário de operação (comprador ou destino
+# diferentes, ADR 0026): não disputam o enquadramento da venda comum ao consumidor.
+OUTRO_CENARIO = (
+    "diferimento",
+    "export",
+    "administracao publica",
+    "produtor rural",
+    "zona franca",
+    "zona de processamento",
+    "cooperativa",
+    "industria incentivada",
+    "regime regular que promova industrializacao",
+)
+
 
 @dataclass
 class Dimensao:
@@ -59,6 +89,8 @@ class PerguntaNecessaria:
     motivo: str
     nivel: str = NivelRevisao.OPERACIONAL
     sugestao: dict[str, str] | None = None
+    # Agrupamento próprio da pergunta (sufixo da chave do grupo); vazio = o padrão do escopo.
+    grupo: str = ""
 
 
 @dataclass
@@ -86,6 +118,10 @@ class EntradaAvaliacao:
     operacao: list[dict[str, Any]] = field(default_factory=list)
     operacao_fatos: list[dict[str, Any]] = field(default_factory=list)
     operacao_afastada: list[str] = field(default_factory=list)  # "regime: motivo" (vale para a empresa toda)
+    # Decisões de pessoas para o mesmo código, cenário e ramo (ADR 0028), vindas de `decisoes.carregar`.
+    decisoes: list[dict[str, Any]] = field(default_factory=list)
+    # O NCM está no Anexo XVII (lista fechada do Imposto Seletivo)? None = não se aplica (NBS) ou sem base.
+    is_no_anexo_xvii: bool | None = None
 
 
 @dataclass
@@ -107,6 +143,8 @@ class Avaliacao:
     fundamentos: list[dict[str, Any]] = field(default_factory=list)
     motivos: list[str] = field(default_factory=list)
     hipoteses_avaliadas: list[dict[str, Any]] = field(default_factory=list)
+    # NCM/NBS a confirmar no cadastro sem mudar o imposto (ADR 0029); vazio = nada a ajustar.
+    ajuste_cadastro: dict[str, Any] = field(default_factory=dict)
 
     def dimensoes_dict(self) -> dict[str, dict[str, str]]:
         return {d.chave: d.como_dict() for d in self.dimensoes}
@@ -244,7 +282,23 @@ def _identidade(ent: EntradaAvaliacao) -> tuple[Dimensao, Dimensao]:
             Dimensao("identificacao", situacao, (idt.get("entendimento") or texto)[:300]),
             Dimensao("codigo_fiscal", ATENCAO, texto),
         )
-    if idt.get("descricao_suficiente") is False:
+    # Dúvidas da instrução nova (ADR 0029): só pesa a que aponta palavras da própria descrição. "E se fosse
+    # X?" sem nada na descrição que sugira X vira observação.
+    if idt.get("duvidas"):
+        fundamentadas, observadas = _separar_duvidas(idt["duvidas"], idt.get("descricao_normalizada") or "")
+        duvidas = fundamentadas
+        observacoes = observadas
+    else:
+        observacoes = []
+    conf_parecer = float(idt.get("confianca_parecer") or conf)
+    if idt.get("dois_votos") and idt.get("descricao_suficiente") is not False and conf_parecer >= 0.85:
+        # O código do cadastro e o parecer que decide escolheram o mesmo código: dois votos contra um.
+        texto = "O NCM/NBS do cadastro e o parecer da IA escolheram o mesmo código"
+        pontos = [*duvidas, *observacoes]
+        if pontos:
+            texto += " · pontos observados (não mudaram a escolha): " + "; ".join(pontos)
+        d_id = Dimensao("identificacao", OK, texto[:300])
+    elif idt.get("descricao_suficiente") is False:
         d_id = Dimensao(
             "identificacao", ATENCAO, ("descrição incompleta: " + "; ".join(duvidas))[:300] or "descrição incompleta"
         )
@@ -287,6 +341,27 @@ def _identidade(ent: EntradaAvaliacao) -> tuple[Dimensao, Dimensao]:
     else:
         d_cod = Dimensao("codigo_fiscal", ATENCAO, f"{cod}")
     return d_id, d_cod
+
+
+def _norm(t: str) -> str:
+    t = unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+
+def _separar_duvidas(duvidas: list[Any], descricao: str) -> tuple[list[str], list[str]]:
+    """(dúvidas apoiadas em palavras da descrição, observações hipotéticas)."""
+    desc = f" {_norm(descricao)} "
+    apoiadas, hipoteticas = [], []
+    for d in duvidas:
+        if isinstance(d, str):
+            apoiadas.append(d)
+            continue
+        texto, trecho = str(d.get("duvida") or ""), _norm(str(d.get("trecho") or ""))
+        if trecho and f" {trecho} " in desc:
+            apoiadas.append(f"{texto} (“{d.get('trecho')}”)")
+        elif texto:
+            hipoteticas.append(texto)
+    return apoiadas, hipoteticas
 
 
 def _rotulo_ref(r: dict[str, Any], ref: str) -> str:
@@ -457,7 +532,8 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
             texto = ", ".join(dict.fromkeys(_rotulo_ref(ent.refs[f["ref"]], f["ref"]) for f in validos))
             if ent.tese_aprovada and not op_escolhida:
                 texto += " · tese validada por revisor"
-            dims["fonte"] = Dimensao("fonte", ATENCAO if invalidos else OK, texto[:300])
+            atencao = bool(invalidos) and escolhida.get("tipo") != "regra_geral"
+            dims["fonte"] = Dimensao("fonte", ATENCAO if atencao else OK, texto[:300])
     elif faltando:
         dims["regra"] = Dimensao("regra", PENDENTE, "hipóteses em aberto: depende de " + ", ".join(faltando))
         dims["condicoes"] = Dimensao("condicoes", PENDENTE, "fatos a confirmar: " + ", ".join(faltando))
@@ -490,12 +566,13 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
     refs_escolhida = {f.get("ref") for f in (escolhida or {}).get("fundamentos", [])}
     cct = av.cclasstrib or ""
     relevantes, sobre_is, informativos = [], [], []
+    conflito_pendente: list[str] = []  # fatos que resolveriam um conflito real (viram pergunta)
     # cClassTrib que a própria tabela oficial veda para este código não disputam o enquadramento.
     vedados = {
         str(r.get("cclasstrib"))
         for r in ent.refs.values()
         if r.get("tipo") == "correlacao" and str(r.get("permissao") or "").upper() == "VEDADO"
-    }
+    } | _de_outro_cenario(ent)
     for c in tese.get("conflitos", []):
         texto, refs = c.get("descricao") or "", set(c.get("refs") or [])
         if op_escolhida and not (refs & refs_is or "seletivo" in texto.lower()):
@@ -509,7 +586,18 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
             bool(refs & refs_escolhida) or (bool(cct) and (cct in texto or cct in em_jogo)) or f"T{cct}" in refs
         )
         if toca and (em_jogo - {cct} - vedados):
-            relevantes.append(texto)  # aponta outro cClassTrib possível: só o especialista decide
+            # Aponta outro cClassTrib possível. Se o Jurista disse qual fato separa os dois enquadramentos
+            # (ADR 0029), o fato decide: conhecido e diferente do que levaria ao outro → resolvido; ainda
+            # desconhecido → pergunta. Sem fato que decida, só o especialista resolve.
+            resolucao = _resolver_por_fato(c, ent.fatos)
+            f_decide = chave(str(c.get("fato_que_decide") or ""))
+            if resolucao == "resolvido":
+                v_decide = _valor_fato(ent.fatos, f_decide)
+                informativos.append(f"{texto} — resolvido pelo fato “{f_decide.replace('_', ' ')}” = {v_decide}")
+            elif resolucao == "pendente":
+                conflito_pendente.append(f_decide)
+            else:
+                relevantes.append(texto)
         elif toca:
             informativos.append(texto)  # fontes coerentes com a conclusão: não muda o resultado
         elif refs & refs_is or "seletivo" in texto.lower():
@@ -524,21 +612,55 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
         return a.get("cclasstrib") == cct and (not cods or any(codigo_item.startswith(c) for c in cods))
 
     graves = [a.get("descricao") or "" for a in ent.alertas if a.get("gravidade") == "alta" and toca_o_item(a)]
-    medios = [a.get("descricao") or "" for a in ent.alertas if a.get("gravidade") != "alta" and toca_o_item(a)]
+    medios = []
+    for a in ent.alertas:
+        if a.get("gravidade") == "alta" or not toca_o_item(a):
+            continue
+        if _restricao_conferida(a, escolhida, usados):
+            # A lei restringe em palavras (ex.: "sem adição de açúcar") e a regra estruturada não: o Jurista
+            # transformou a restrição em condição, e os fatos do item a confirmaram (ADR 0029).
+            informativos.append(f"{a.get('descricao') or ''} — conferida com os fatos do item")
+            continue
+        medios.append(a.get("descricao") or "")
     analisados = {h["cclasstrib"] for h in hipoteses} | so_operacao
     comentado = " ".join(
         [tese.get("observacoes") or "", *(c.get("descricao") or "" for c in tese.get("conflitos", []))]
     )
-    nao_analisados = sorted(c for c in set(ent.correlacionados) - analisados if c not in comentado)
+    nao_analisados = sorted(
+        c for c in set(ent.correlacionados) - analisados - _de_outro_cenario(ent) if c not in comentado
+    )
     if nao_analisados and not op_escolhida:
         medios.append("correlação oficial não analisada: " + ", ".join(nao_analisados))
     if av.cclasstrib and not op_escolhida:
         for p in ent.precedentes:
             if p.get("cclasstrib") and p["cclasstrib"] != av.cclasstrib and not p.get("condicoes"):
                 graves.append(f"regra aprovada ({p.get('dispositivo')}) indica {p['cclasstrib']}")
+    for f in dict.fromkeys(conflito_pendente):
+        if all(p.atributo != f for p in av.perguntas):
+            info = necessarios.get(f, {})
+            av.perguntas.append(
+                PerguntaNecessaria(
+                    atributo=f,
+                    escopo=info.get("escopo") or "item",
+                    pergunta=info.get("pergunta") or f"Qual é o valor de “{f.replace('_', ' ')}”?",
+                    opcoes=[
+                        {"valor": valor(o), "rotulo": rotulo_opcao(o), "efeito": ""}
+                        for o in info.get("opcoes") or ["sim", "nao"]
+                    ],
+                    motivo="Decide entre dois enquadramentos que as fontes oficiais admitem para este código.",
+                    sugestao=ent.sugestoes.get(f),
+                )
+            )
     if graves or relevantes:
         dims["conflito"] = Dimensao("conflito", FALHA, "; ".join(graves + relevantes)[:400])
         motivos.append("CONFLITO_NORMATIVO")
+    elif conflito_pendente:
+        dims["conflito"] = Dimensao(
+            "conflito",
+            PENDENTE,
+            "as fontes admitem outro enquadramento; decide: "
+            + ", ".join(f.replace("_", " ") for f in dict.fromkeys(conflito_pendente)),
+        )
     elif medios:
         dims["conflito"] = Dimensao("conflito", ATENCAO, "; ".join(medios)[:400])
     elif informativos:
@@ -550,6 +672,11 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
 
     # --- Imposto Seletivo ----------------------------------------------------------------------------
     sit = is_.get("situacao", "nao_sujeito") if not sem_produto else "nao_avaliado"
+    # O IS só alcança os bens do Anexo XVII (LC 214/2025, art. 409, § 1º): um NCM que o anexo não cita não é
+    # sujeito, diga o parecer o que disser (ADR 0029).
+    fora_do_anexo = sit in ("sujeito", "depende") and ent.is_no_anexo_xvii is False
+    if fora_do_anexo:
+        sit = "nao_sujeito"
     if sit == "depende":
         h_is = {"id": "IS", "titulo": "Imposto Seletivo", "cclasstrib": "IS", "condicoes": is_.get("condicoes", [])}
         r = _testar(h_is, ent.fatos)
@@ -571,7 +698,47 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
                     )
                 )
     av.is_situacao = sit
-    if sit == "sujeito":
+    papel_is = _valor_fato(ent.fatos, FATO_IS) if sit == "sujeito" else DESCONHECIDO
+    if sit == "sujeito" and papel_is == "nao":
+        # O IS incide uma única vez, na fabricação ou na importação (LC 214/2025, arts. 409 e 412): quem só
+        # revende não recolhe nem destaca o imposto. O produto continua sujeito; a venda desta empresa não.
+        av.is_situacao = "na_origem"
+        dims["imposto_seletivo"] = Dimensao(
+            "imposto_seletivo",
+            OK,
+            "Produto sujeito ao Imposto Seletivo, cobrado uma única vez na fabricação ou na importação "
+            "(LC 214/2025, arts. 409 e 412). A empresa informou que não fabrica nem importa esses produtos: "
+            "na revenda o IS não é recolhido nem destacado.",
+        )
+    elif sit == "sujeito" and papel_is == DESCONHECIDO:
+        dims["imposto_seletivo"] = Dimensao(
+            "imposto_seletivo",
+            PENDENTE,
+            "sujeito ao Imposto Seletivo; falta saber se a empresa fabrica ou importa (quem só revende não recolhe)",
+        )
+        if all(p.atributo != FATO_IS for p in av.perguntas):
+            av.perguntas.append(
+                PerguntaNecessaria(
+                    atributo=FATO_IS,
+                    escopo="empresa",
+                    pergunta=PERGUNTA_IS,
+                    opcoes=[
+                        {
+                            "valor": "nao",
+                            "rotulo": "Não, só revende",
+                            "efeito": "o IS já foi cobrado na fábrica ou na importação; a venda segue sem IS",
+                        },
+                        {
+                            "valor": "sim",
+                            "rotulo": "Sim, fabrica ou importa",
+                            "efeito": "o IS é recolhido nas vendas desses produtos (o contador confere)",
+                        },
+                    ],
+                    motivo="O Imposto Seletivo incide uma única vez, na fabricação ou na importação (LC 214/2025, "
+                    "arts. 409 e 412): define se a empresa recolhe o imposto.",
+                )
+            )
+    elif sit == "sujeito":
         dims["imposto_seletivo"] = Dimensao(
             "imposto_seletivo", ATENCAO if ent.is_exige_analise else OK, is_.get("explicacao") or "sujeito ao IS"
         )
@@ -586,62 +753,76 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
             if escolhida is not None
             else "",
         )
+    elif fora_do_anexo:
+        dims["imposto_seletivo"] = Dimensao(
+            "imposto_seletivo",
+            OK,
+            (
+                "Não sujeito: o código não está no Anexo XVII da LC 214/2025, a lista dos bens do Imposto Seletivo "
+                f"(art. 409, § 1º). O parecer da família apontava “{is_.get('situacao')}”: "
+                f"{is_.get('explicacao') or ''}"
+            )[:400],
+        )
     else:
         dims["imposto_seletivo"] = Dimensao("imposto_seletivo", OK, is_.get("explicacao") or "não sujeito")
-    if sobre_is and dims["imposto_seletivo"].situacao == OK and sit != "nao_sujeito":
+    if (
+        sobre_is
+        and not fora_do_anexo
+        and dims["imposto_seletivo"].situacao == OK
+        and sit != "nao_sujeito"
+        and av.is_situacao == sit
+    ):
         dims["imposto_seletivo"] = Dimensao("imposto_seletivo", ATENCAO, "; ".join(sobre_is)[:400])
 
-    # --- a dúvida de identificação muda o imposto? ---------------------------------------------------
-    alternativas = ent.tratamento_alternativas
-    if (
-        alternativas
-        and dims["identificacao"].situacao == ATENCAO
-        and av.cclasstrib
-        and sit not in ("indefinido", "nao_avaliado")
-        and not op_escolhida
-    ):
-        atual = f"{av.cclasstrib}|{'sujeito' if sit == 'sujeito' else 'nao_sujeito'}"
-        if all(t == atual for t in alternativas.values()):
-            idt = ent.identidade or {}
-            cod = idt.get("codigo_formatado") or idt.get("codigo")
-            outros = " ou ".join(formatar_codigo(idt.get("tipo_codigo") or "ncm", c) for c in alternativas)
-            mesmo = f"{cod} ou {outros} têm o mesmo tratamento (cClassTrib {av.cclasstrib})"
-            # Só dispensa a pessoa quando o NCM do ERP foi mantido, a descrição basta e a certeza é razoável.
-            # Criar ou trocar um NCM mexe no cadastro (e em outros impostos): isso sempre é confirmado.
-            seguro = (
-                idt.get("situacao") == "confirmado"
-                and idt.get("descricao_suficiente") is not False
-                and float(idt.get("confianca_modelo") or 0) >= 0.7
-            )
-            if seguro:
-                dims["identificacao"] = Dimensao(
-                    "identificacao",
-                    OK,
-                    (
-                        f"A dúvida sobre o código não muda o imposto: {mesmo}. "
-                        f"Dúvida registrada: {dims['identificacao'].texto}"
-                    )[:300],
-                )
-            else:
-                dims["identificacao"] = Dimensao(
-                    "identificacao",
-                    ATENCAO,
-                    (
-                        f"{dims['identificacao'].texto} · O imposto seria o mesmo ({mesmo}), mas o NCM precisa "
-                        "de confirmação."
-                    )[:300],
-                )
+    if _servico_de_alimentacao_sem_refeicoes(ent) and not op_escolhida:
+        dims["identificacao"] = Dimensao(
+            "identificacao",
+            FALHA,
+            "A IA classificou o item como serviço de alimentação (NBS), mas a empresa informou que não serve "
+            "refeições: o item é mercadoria e precisa de um NCM. Informe o NCM do produto.",
+        )
+
+    # --- a dúvida sobre o código muda o imposto? (ADR 0019 e 0029) -----------------------------------
+    if av.cclasstrib and sit in ("sujeito", "nao_sujeito") and not op_escolhida and not ent.produtos_na_lei:
+        _duvida_de_codigo(ent, av, dims, sit)
 
     # --- regime da operação: o cClassTrib não depende do NCM ------------------------------------------
     if op_escolhida and escolhida is not None and escolhida.get("independe_do_codigo"):
+        # O enquadramento vem da operação (ADR 0026): a dúvida sobre o NCM/NBS não muda o imposto. O código
+        # segue em paralelo, para a nota fiscal, pela lista "Ajustes de cadastro" (ADR 0029).
         nota = f"O cClassTrib não depende dele: {escolhida['titulo']}."
-        d = dims["codigo_fiscal"]
-        if d.situacao == FALHA:
-            dims["codigo_fiscal"] = Dimensao(
-                "codigo_fiscal", ATENCAO, f"NCM/NBS ainda não definido: defina-o para a nota fiscal. {nota}"
+        idt = ent.identidade or {}
+        cod, erp = idt.get("codigo"), idt.get("codigo_erp")
+        ruins = (ATENCAO, FALHA)
+        if dims["identificacao"].situacao in ruins or dims["codigo_fiscal"].situacao in ruins:
+            tipo = idt.get("tipo_codigo") or "ncm"
+            if cod and cod != erp:
+                texto = f"NCM/NBS a confirmar no cadastro: sugerido {formatar_codigo(tipo, cod)}" + (
+                    f" no lugar de {formatar_codigo(tipo, erp)}" if erp else ""
+                )
+            elif not cod:
+                texto = "NCM/NBS ainda não definido: defina-o no cadastro para a nota fiscal"
+            else:
+                texto = f"{formatar_codigo(tipo, cod)} do cadastro mantido"
+            if cod != erp or not cod:
+                av.ajuste_cadastro = {
+                    "tipo_codigo": tipo,
+                    "erp": erp,
+                    "erp_informado": idt.get("codigo_anterior"),
+                    "sugerido": cod,
+                    "alternativas": list(idt.get("codigos_em_disputa") or []),
+                    "tratamento": f"{av.cclasstrib}|regime",
+                    "texto": f"{texto}. {nota}",
+                }
+            anterior = dims["identificacao"].texto if dims["identificacao"].situacao != OK else ""
+            dims["identificacao"] = Dimensao(
+                "identificacao",
+                OK,
+                (f"A dúvida sobre o código não muda o imposto. {nota}" + (f" Dúvida: {anterior}" if anterior else ""))[
+                    :300
+                ],
             )
-        elif d.situacao == ATENCAO:
-            dims["codigo_fiscal"] = Dimensao("codigo_fiscal", ATENCAO, f"{d.texto} · {nota}"[:300])
+            dims["codigo_fiscal"] = Dimensao("codigo_fiscal", OK, f"{texto}. {nota}"[:300])
 
     # --- a lei nomeia este produto com outro código? -------------------------------------------------
     if ent.produtos_na_lei and dims["codigo_fiscal"].situacao != FALHA:
@@ -658,6 +839,20 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
         )
         motivos.append("PRODUTO_CITADO_NA_LEI")
 
+    # --- o que as pessoas já decidiram para este código (ADR 0028) -----------------------------------
+    if (
+        ent.decisoes
+        and escolhida is not None
+        and av.cclasstrib
+        and not op_escolhida
+        and sit in ("sujeito", "nao_sujeito")
+    ):
+        fatos_decisivos = [{"atributo": f, "valor": ent.fatos[f].get("valor")} for f in usados if f in ent.fatos]
+        cons = decisoes_mod.consolidar(
+            ent.decisoes, decisoes_mod.resultado(av.cclasstrib, sit), decisoes_mod.chave_fatos(fatos_decisivos)
+        )
+        _pesar_decisoes(dims, motivos, cons, av.cclasstrib)
+
     # --- conclusão em linguagem humana ---------------------------------------------------------------
     av.fatos_usados = [
         {"atributo": f, **{k: v for k, v in ent.fatos[f].items() if k != "atributo"}} for f in usados if f in ent.fatos
@@ -668,7 +863,9 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
             f"{escolhida['titulo']}. {escolhida.get('explicacao', '').strip()}"
             + (f" Fatos determinantes: {cond}." if cond else "")
             + (
-                f" Imposto Seletivo: {'sujeito' if sit == 'sujeito' else 'não sujeito'}."
+                " Imposto Seletivo: cobrado na fabricação ou importação; não incide na revenda."
+                if av.is_situacao == "na_origem"
+                else f" Imposto Seletivo: {'sujeito' if sit == 'sujeito' else 'não sujeito'}."
                 if sit not in ("indefinido", "nao_avaliado")
                 else ""
             )
@@ -682,6 +879,210 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
     if av.perguntas:
         motivos.append("FATO_PENDENTE")
     return _finalizar(av, dims, motivos)
+
+
+def _de_outro_cenario(ent: EntradaAvaliacao) -> set[str]:
+    """cClassTrib do pacote cujo nome oficial indica outro cenário de operação (ADR 0026 e 0029)."""
+    return {c for c, info in ent.cclasstrib.items() if any(k in _norm(info.get("nome") or "") for k in OUTRO_CENARIO)}
+
+
+def _restricao_conferida(a: dict[str, Any], escolhida: dict[str, Any] | None, usados: list[str]) -> bool:
+    restricao = a.get("tipo") == "DIV_RESTRICAO_TEXTUAL" or str(a.get("descricao") or "").startswith(
+        "A lei restringe o benefício em palavras"
+    )
+    tem_condicao = bool((escolhida or {}).get("condicoes") or (escolhida or {}).get("excecoes"))
+    return restricao and tem_condicao and bool(usados)
+
+
+def _resolver_por_fato(c: dict[str, Any], fatos: dict[str, dict[str, Any]]) -> str:
+    """Um conflito que o Jurista amarrou a um fato (ADR 0029): "resolvido", "pendente" ou "" (sem fato)."""
+    if not c.get("fato_que_decide"):
+        return ""
+    outro = valor(c.get("valor_para_o_outro_enquadramento") or "")
+    if outro == DESCONHECIDO:
+        return ""
+    v = _valor_fato(fatos, chave(str(c["fato_que_decide"])))
+    if v == DESCONHECIDO:
+        return "pendente"
+    return "resolvido" if v != outro else ""
+
+
+def _servico_de_alimentacao_sem_refeicoes(ent: EntradaAvaliacao) -> bool:
+    """A IA deu ao item um código de SERVIÇO de alimentação (NBS 1.0301), mas a empresa informou que não
+    serve refeições: o item é mercadoria (frango assado inteiro, bolo de vitrine) e precisa de NCM."""
+    idt = ent.identidade or {}
+    return (
+        idt.get("tipo_codigo") == "nbs"
+        and str(idt.get("codigo") or "").startswith(NBS_ALIMENTACAO)
+        and _valor_fato(ent.fatos, "fornece_refeicoes") == "nao"
+    )
+
+
+def _tratamento_texto(t: str) -> str:
+    cct, _, is_ = t.partition("|")
+    return f"cClassTrib {cct}" + (" + Imposto Seletivo" if is_ == "sujeito" else "")
+
+
+def _duvida_de_codigo(ent: EntradaAvaliacao, av: Avaliacao, dims: dict[str, Dimensao], sit: str) -> None:
+    """A dúvida sobre o NCM/NBS muda o imposto? (ADR 0019 e 0029)
+
+    Compara o tratamento do código escolhido com o de todos os códigos em disputa (o do ERP, o de cada
+    parecer e as alternativas). Se todos dão o mesmo cClassTrib e Imposto Seletivo, a classificação do
+    IBS/CBS sai e o código, quando muda o cadastro, vai para a lista "Ajustes de cadastro" (uma pessoa
+    confirma o NCM sem travar o imposto). Se os tratamentos diferem e são todos conhecidos, vira a pergunta
+    "o que é este item?" ao operador. Se o tratamento de algum código não é conhecido, continua com o
+    contador."""
+    idt = ent.identidade or {}
+    codigo = idt.get("codigo")
+    if not codigo or idt.get("situacao") in (None, "indefinido", "memoria"):
+        return
+    ruins = (ATENCAO, FALHA)
+    if dims["identificacao"].situacao not in ruins and dims["codigo_fiscal"].situacao not in ruins:
+        return
+    tipo = idt.get("tipo_codigo") or "ncm"
+    atual = f"{av.cclasstrib}|{sit}"
+    disputa = dict(ent.tratamento_alternativas)
+    # Identidades anteriores à ADR 0029 não têm `codigo_erp`: o código anterior faz esse papel.
+    erp = idt["codigo_erp"] if "codigo_erp" in idt else idt.get("codigo_anterior")
+    if erp and erp != codigo and erp not in disputa:
+        return  # o código que sairia do cadastro não foi comparado: não dá para dizer que o imposto é o mesmo
+    # O código do cadastro entre as opções é uma âncora independente da IA: aceita certeza menor.
+    ancora = bool(erp) and (erp == codigo or erp in disputa)
+    conf = float(idt.get("confianca_modelo") or 0)
+    if conf < (0.5 if ancora else 0.7):
+        return
+    # Descrição vaga: o produto verdadeiro pode estar fora das opções. Só segue com uma âncora (o NCM do
+    # ERP entre as opções) ou com os dois pareceres da IA de acordo.
+    dois_pareceres = bool(idt.get("segundo_parecer") and idt.get("concordancia"))
+    if idt.get("descricao_suficiente") is False and not (ancora or dois_pareceres):
+        return
+    if _servico_de_alimentacao_sem_refeicoes(ent):
+        return
+    if any(t is None for t in disputa.values()):
+        return
+    if any(t not in (atual, MESMO) for t in disputa.values()):
+        _pergunta_de_identificacao(ent, av, dims, disputa, atual)
+        return
+    if not disputa and not (idt.get("dois_votos") or conf >= 0.85):
+        return
+    cod = idt.get("codigo_formatado") or formatar_codigo(tipo, codigo)
+    outros = [formatar_codigo(tipo, c) for c in disputa]
+    mesmo = (f"{cod} ou {' ou '.join(outros)} têm" if outros else f"{cod} tem") + (
+        f" o mesmo tratamento ({_tratamento_texto(atual)})"
+    )
+    anterior = dims["identificacao"].texto if dims["identificacao"].situacao != OK else ""
+    texto_id = f"A dúvida sobre o código não muda o imposto: {mesmo}." + (
+        f" Dúvida registrada: {anterior}" if anterior else ""
+    )
+    dims["identificacao"] = Dimensao("identificacao", OK, texto_id[:300])
+    if erp == codigo:
+        if dims["codigo_fiscal"].situacao != OK:
+            dims["codigo_fiscal"] = Dimensao(
+                "codigo_fiscal", OK, f"{cod} do cadastro mantido; a dúvida não muda o imposto"
+            )
+        return
+    # O código do cadastro muda (ou não existia): a pessoa confirma na lista "Ajustes de cadastro".
+    erp_fmt = formatar_codigo(tipo, erp) if erp else None
+    texto = (
+        f"NCM/NBS a confirmar no cadastro: sugerido {cod}"
+        + (f" no lugar de {erp_fmt}" if erp_fmt else " (o cadastro não tinha código válido)")
+        + ". Não muda o IBS/CBS."
+    )
+    av.ajuste_cadastro = {
+        "tipo_codigo": tipo,
+        "erp": erp,
+        "erp_informado": idt.get("codigo_anterior"),
+        "sugerido": codigo,
+        "alternativas": list(disputa),
+        "tratamento": atual,
+        "texto": texto,
+    }
+    dims["codigo_fiscal"] = Dimensao("codigo_fiscal", OK, texto[:300])
+
+
+def _pergunta_de_identificacao(
+    ent: EntradaAvaliacao, av: Avaliacao, dims: dict[str, Dimensao], disputa: dict[str, str | None], atual: str
+) -> None:
+    """Os códigos possíveis têm tratamentos diferentes: pergunta ao operador o que o item é (ADR 0029)."""
+    idt = ent.identidade or {}
+    if _valor_fato(ent.fatos, FATO_CODIGO) != DESCONHECIDO:
+        return  # já respondida com "nenhuma destas": o contador decide
+    tipo = idt.get("tipo_codigo") or "ncm"
+    codigo = str(idt.get("codigo"))
+    descricoes = idt.get("descricoes_em_disputa") or {}
+    rotulos = idt.get("rotulos_em_disputa") or {}
+    opcoes = []
+    for c in [codigo, *disputa]:
+        t = atual if c == codigo or disputa.get(c) == MESMO else str(disputa.get(c))
+        nome = rotulos.get(c) or (descricoes.get(c) or "").split(" › ")[-1] or "descrição oficial indisponível"
+        opcoes.append(
+            {"valor": c, "rotulo": f"{nome} ({formatar_codigo(tipo, c)})"[:200], "efeito": _tratamento_texto(t)}
+        )
+    opcoes.append({"valor": "outro", "rotulo": "Nenhuma destas", "efeito": "o contador define o código"})
+    av.perguntas.append(
+        PerguntaNecessaria(
+            atributo=FATO_CODIGO,
+            escopo="item",
+            pergunta="Qual destas descrições corresponde ao item? Cada uma leva a um imposto diferente.",
+            opcoes=opcoes,
+            motivo="O código do item muda o imposto: "
+            + "; ".join(f"{o['rotulo']} → {o['efeito']}" for o in opcoes[:-1]),
+            grupo="ident:" + "-".join(sorted([codigo, *disputa])),
+        )
+    )
+    dims["identificacao"] = Dimensao(
+        "identificacao",
+        PENDENTE,
+        "Qual código descreve o item? As opções levam a impostos diferentes; a pergunta foi para o operador.",
+    )
+    dims["codigo_fiscal"] = Dimensao("codigo_fiscal", PENDENTE, "aguarda a resposta sobre o que é o item")
+
+
+def _vezes(n: int) -> str:
+    return f"{n} vez" if n == 1 else f"{n} vezes"
+
+
+def _pesar_decisoes(
+    dims: dict[str, Dimensao], motivos: list[str], cons: decisoes_mod.Consolidado, cclasstrib: str
+) -> None:
+    """Reforça ou contesta a conclusão com as decisões anteriores de pessoas (ADR 0028)."""
+    if cons.vazio:
+        return
+    conflito, fonte = dims["conflito"], dims["fonte"]
+    if cons.contra:
+        if cons.a_favor:
+            texto = (
+                f"Decisões anteriores divergem: {cons.a_favor} para {cclasstrib} e {cons.contra} para outro "
+                f"enquadramento ({cons.outro})."
+            )
+            grave = False
+        else:
+            texto = (
+                f"Pessoas já decidiram {cons.outro} para este código ({_vezes(cons.contra)}); "
+                f"a análise indica {cclasstrib}."
+            )
+            grave = cons.contra >= decisoes_mod.CONFIRMA
+        situacao = FALHA if grave or conflito.situacao == FALHA else ATENCAO
+        anterior = conflito.texto if conflito.situacao != OK else ""
+        dims["conflito"] = Dimensao("conflito", situacao, (texto + (f" {anterior}" if anterior else ""))[:400])
+        motivos.append("DECISAO_ANTERIOR_DIVERGENTE")
+        return
+    n = cons.a_favor
+    quem = f"{cons.empresas} empresa" + ("s" if cons.empresas != 1 else "")
+    nota = f"decidido igual por pessoas {_vezes(n)} ({quem} do ramo)"
+    if n >= decisoes_mod.CONFIRMA:
+        nota = f"confirmado pelo uso: {nota}"
+        if conflito.situacao in (FALHA, ATENCAO):
+            dims["conflito"] = Dimensao(
+                "conflito", OK, f"Resolvido por {n} decisões anteriores iguais. Apontado: {conflito.texto}"[:400]
+            )
+            motivos[:] = [m for m in motivos if m != "CONFLITO_NORMATIVO"]
+    elif n >= decisoes_mod.DISPENSA_AVISOS and conflito.situacao == ATENCAO:
+        dims["conflito"] = Dimensao(
+            "conflito", OK, f"Aviso dispensado por {n} decisões anteriores iguais: {conflito.texto}"[:400]
+        )
+    situacao_fonte = OK if n >= decisoes_mod.DISPENSA_AVISOS and fonte.situacao == ATENCAO else fonte.situacao
+    dims["fonte"] = Dimensao("fonte", situacao_fonte, f"{fonte.texto[:220]} · {nota}")
 
 
 def _finalizar(av: Avaliacao, dims: dict[str, Dimensao], motivos: list[str]) -> Avaliacao:

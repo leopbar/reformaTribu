@@ -12,21 +12,28 @@ from sqlalchemy import select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.analise import decisoes as decisoes_mod
 from app.analise import fatos as fatos_mod
 from app.analise import operacao
 from app.analise.avaliacao import Avaliacao, EntradaAvaliacao, avaliar
 from app.core.codes import formatar_codigo
 from app.models import Audit, AuditItem, Company, OrgSettings, Pendencia, RefSnapshot, TaxProfile, TaxThesis
-from app.models.enums import EscopoFato, StatusItem, StatusPendencia, StatusRevisao
+from app.models.enums import EscopoFato, StatusAjusteCadastro, StatusItem, StatusPendencia, StatusRevisao
 
 CAMPOS_PERFIL = ("status", "cclasstrib", "cst", "hipotese", "imposto_seletivo", "codigo")
 
 
-def grupo_da_pergunta(item: AuditItem, escopo: str) -> tuple[str, str, str]:
-    """(escopo, grupo_chave, rótulo) da pergunta: o mais amplo possível."""
+def grupo_da_pergunta(item: AuditItem, escopo: str, grupo: str = "") -> tuple[str, str, str]:
+    """(escopo, grupo_chave, rótulo) da pergunta: o mais amplo possível.
+
+    `grupo` separa perguntas do mesmo atributo com opções diferentes (ex.: "o que é o item?", ADR 0029):
+    juntam-se só os itens da mesma categoria com as mesmas opções."""
     if escopo == EscopoFato.EMPRESA:
         return EscopoFato.EMPRESA, "", "Toda a empresa"
     cat = fatos_mod.grupo_categoria(item.categoria)
+    if grupo:
+        rotulo = f"Categoria “{item.categoria}”" if cat else f"Item {item.codigo_interno}"
+        return EscopoFato.GRUPO, f"{cat or 'item:' + item.codigo_interno}|{grupo}"[:250], rotulo
     if cat:
         return EscopoFato.GRUPO, cat, f"Categoria “{item.categoria}”"
     tipo = (item.identidade or {}).get("tipo_codigo") or item.tipo_codigo_sugerido or "ncm"
@@ -87,7 +94,33 @@ def entrada(
         operacao=operacao.fundamentar(operacao.hipoteses(aplic.regimes), mat),
         operacao_fatos=operacao.fatos_necessarios(aplic.regimes),
         operacao_afastada=[f"{r.titulo}: {motivo}" for r, motivo in aplic.afastados],
+        decisoes=decisoes_mod.carregar(session, item, empresa),
+        is_no_anexo_xvii=_no_anexo_xvii(session, idt, (snap.versoes if snap else None) or {}),
     )
+
+
+def _no_anexo_xvii(session: Session, idt: dict[str, Any], versoes: dict[str, Any]) -> bool | None:
+    """O NCM do item é citado por algum item do Anexo XVII (bens do Imposto Seletivo)? None para NBS
+    (os serviços do anexo não têm código) ou quando a base da lei não está disponível."""
+    from app.analise.evidencias import prefixos
+
+    v_lc = versoes.get("lc214")
+    if idt.get("tipo_codigo") != "ncm" or not idt.get("codigo") or not v_lc:
+        return None
+    total = session.scalar(
+        text("SELECT count(*) FROM legal_provisions WHERE version_id = :v AND tipo = 'anexo_item' AND anexo = 'XVII'"),
+        {"v": uuid.UUID(str(v_lc))},
+    )
+    if not total:
+        return None  # a lei importada não trouxe o Anexo XVII: não dá para concluir
+    citado = session.scalar(
+        text(
+            "SELECT count(*) FROM legal_provisions WHERE version_id = :v AND tipo = 'anexo_item' AND anexo = 'XVII' "
+            "AND codigos_citados && CAST(:p AS varchar[])"
+        ),
+        {"v": uuid.UUID(str(v_lc)), "p": prefixos(str(idt["codigo"]))},
+    )
+    return bool(citado)
 
 
 def _produtos_na_lei(session: Session, item: AuditItem, audit: Audit) -> list[dict[str, Any]]:
@@ -104,18 +137,55 @@ def _produtos_na_lei(session: Session, item: AuditItem, audit: Audit) -> list[di
 def tratamento_alternativas(
     session: Session, item: AuditItem, audit: Audit, fatos: dict[str, dict[str, Any]]
 ) -> dict[str, str | None]:
-    """Para cada código alternativo da dúvida de identificação, o tratamento ("cClassTrib|IS") que ele
-    teria. Sem IA: usa o parecer já existente da família ou, se não houver, a base oficial."""
+    """Para cada código em disputa na identificação (o do ERP, o de cada parecer e as alternativas), o
+    tratamento ("cClassTrib|IS") que ele teria; "=" quando a lei e a tabela oficial tratam o código
+    exatamente como o escolhido. Sem IA: usa o parecer já existente da família ou a base oficial."""
     idt = item.identidade or {}
     tipo = idt.get("tipo_codigo")
-    if not tipo or not idt.get("codigos_alternativos"):
+    codigos = idt.get("codigos_em_disputa") or idt.get("codigos_alternativos") or []
+    if not tipo or not codigos:
         return {}
     snap = session.get(RefSnapshot, audit.snapshot_id) if audit.snapshot_id else None
     versoes = (snap.versoes if snap else None) or {}
     return {
-        cod: tratamento_do_codigo(session, tipo, cod, item.cenario, audit.data_referencia, versoes, fatos)
-        for cod in idt["codigos_alternativos"][:3]
+        cod: tratamento_do_codigo(
+            session, tipo, cod, item.cenario, audit.data_referencia, versoes, fatos, codigo_atual=idt.get("codigo")
+        )
+        for cod in codigos[:6]
     }
+
+
+MESMO_TRATAMENTO = "="
+
+
+def assinatura_juridica(session: Session, tipo: str, codigo: str, versoes: dict[str, Any]) -> tuple[Any, ...] | None:
+    """O que a lei e a tabela oficial dizem sobre o código: as linhas da correlação oficial (cClassTrib,
+    permissão, condição, exceção), os itens dos anexos que o citam e os benefícios pela natureza do
+    produto. Dois códigos com a mesma assinatura recebem o mesmo parecer com os mesmos fatos."""
+    from app.analise.evidencias import prefixos
+    from app.analise.natureza import ligacoes
+
+    v_cct, v_lc = versoes.get("cclasstrib"), versoes.get("lc214")
+    if not v_cct or not v_lc:
+        return None
+    pref = prefixos(codigo)
+    correl = session.execute(
+        text(
+            "SELECT DISTINCT cclasstrib, upper(coalesce(tipo_permissao, '')), coalesce(descricao_condicao, ''), "
+            "coalesce(descricao_excecao, '') FROM cclasstrib_correlacoes WHERE version_id = :vc "
+            "AND codigo_ncm_nbs = ANY(:p)"
+        ),
+        {"vc": uuid.UUID(str(v_cct)), "p": pref},
+    ).all()
+    anexos = session.scalars(
+        text(
+            "SELECT id FROM legal_provisions WHERE version_id = :vl AND tipo = 'anexo_item' "
+            "AND codigos_citados && CAST(:p AS varchar[])"
+        ),
+        {"vl": uuid.UUID(str(v_lc)), "p": pref},
+    ).all()
+    natureza = [str(x) for x in ligacoes(tipo, codigo)]
+    return (tuple(sorted(tuple(r) for r in correl)), tuple(sorted(str(a) for a in anexos)), tuple(sorted(natureza)))
 
 
 def tratamento_do_codigo(
@@ -126,10 +196,16 @@ def tratamento_do_codigo(
     data_referencia: Any,
     versoes: dict[str, Any],
     fatos: dict[str, dict[str, Any]],
+    *,
+    codigo_atual: str | None = None,
 ) -> str | None:
     from app.analise.avaliacao import escolher
     from app.analise.evidencias import prefixos
 
+    if codigo_atual and codigo_atual != codigo:
+        assinatura = assinatura_juridica(session, tipo, codigo, versoes)
+        if assinatura is not None and assinatura == assinatura_juridica(session, tipo, codigo_atual, versoes):
+            return MESMO_TRATAMENTO
     tese = session.scalar(
         select(TaxThesis)
         .where(
@@ -183,7 +259,7 @@ def _registrar_perguntas(session: Session, item: AuditItem, av: Avaliacao) -> li
     saida = []
     atuais: list[uuid.UUID] = []
     for p in av.perguntas:
-        escopo, grupo, rotulo = grupo_da_pergunta(item, p.escopo)
+        escopo, grupo, rotulo = grupo_da_pergunta(item, p.escopo, p.grupo)
         stmt = (
             pg_insert(Pendencia)
             .values(
@@ -290,6 +366,7 @@ def aplicar(
     item.perguntas = _registrar_perguntas(session, item, av)
     item.etapa = "concluido"
     item.processado_em = datetime.now(UTC)
+    registrar_ajuste_cadastro(item, av.ajuste_cadastro)
 
     # --- perfil tributário (versionado: só muda quando o resultado muda) ------------------------
     versionar_perfil(
@@ -320,10 +397,35 @@ def aplicar(
     ):
         item.revisao_status = StatusRevisao.APROVADO
         item.aprovado_automaticamente = True
-        item.final_tipo_codigo, item.final_codigo = item.tipo_codigo_sugerido, item.codigo_sugerido
+        item.final_tipo_codigo, item.final_codigo = item.tipo_codigo_sugerido, codigo_para_o_cadastro(item)
         item.final_cst, item.final_cclasstrib = av.cst, av.cclasstrib
         item.final_dispositivo = item.dispositivo_legal
         item.revisado_por, item.revisado_em = None, datetime.now(UTC)
+
+
+def registrar_ajuste_cadastro(item: AuditItem, ajuste: dict[str, Any]) -> None:
+    """Guarda o NCM/NBS a confirmar no cadastro (ADR 0029). Uma decisão já tomada pela pessoa sobre a
+    mesma sugestão continua valendo; uma sugestão nova volta a ficar pendente."""
+    if not ajuste:
+        item.ajuste_cadastro, item.ajuste_cadastro_status = {}, None
+        return
+    decidido = item.ajuste_cadastro_status in (StatusAjusteCadastro.ACEITO, StatusAjusteCadastro.MANTIDO)
+    mesma = (item.ajuste_cadastro or {}).get("sugerido") == ajuste.get("sugerido")
+    item.ajuste_cadastro = ajuste
+    if not (decidido and mesma):
+        item.ajuste_cadastro_status = StatusAjusteCadastro.PENDENTE
+
+
+def codigo_para_o_cadastro(item: AuditItem) -> str | None:
+    """O código que sai na exportação: enquanto a pessoa não aceitar a sugestão, o do ERP (se válido)."""
+    ajuste = item.ajuste_cadastro or {}
+    if item.ajuste_cadastro_status == StatusAjusteCadastro.ACEITO and ajuste.get("sugerido"):
+        return str(ajuste["sugerido"])
+    if item.ajuste_cadastro_status in (StatusAjusteCadastro.PENDENTE, StatusAjusteCadastro.MANTIDO) and ajuste.get(
+        "erp"
+    ):
+        return str(ajuste["erp"])
+    return item.codigo_sugerido
 
 
 def versionar_perfil(session: Session, item: AuditItem, audit: Audit, *, registro: dict[str, Any], motivo: str) -> bool:
@@ -395,16 +497,104 @@ def reavaliar(session: Session, item_id: uuid.UUID, motivo: str) -> bool:
     if tese is None and not ent.operacao:
         return False  # sem tese e sem regime da operação não há o que reavaliar sem IA
     av = avaliar(ent)
-    motivos_id = [m for m in item.motivos or [] if m not in av.motivos and m not in _MOTIVOS_DA_AVALIACAO]
+    motivos_id = [m for m in item.motivos or [] if m not in av.motivos and m not in MOTIVOS_DA_AVALIACAO]
     aplicar(session, item, audit, av, tese, motivos_identidade=motivos_id, motivo_versao=motivo)
     return True
 
 
-_MOTIVOS_DA_AVALIACAO = {
+def tese_para_reaplicar(
+    session: Session, item: AuditItem, audit: Audit, idt: dict[str, Any], *, aceitar_atual: bool = False
+) -> tuple[TaxThesis | None, bool]:
+    """(tese, precisa de reanálise) para refazer a avaliação sem IA.
+
+    Vale a tese com que o item foi analisado: os fatos do item foram levantados para ela. Se ela foi refeita
+    ("Refazer pareceres"), a nova pode pedir outros fatos: o item precisa de reanálise. Item analisado sem
+    tese (a investigação falhou): a concluída mais recente da família com o MESMO dossiê da empresa, nunca
+    a de outro dossiê (a tese depende de quem vende); sem ela, reanálise."""
+    propria = session.get(TaxThesis, item.thesis_id) if item.thesis_id else None
+    if propria is not None and (propria.status == "concluida" or not aceitar_atual):
+        return (propria, False) if propria.status == "concluida" else (None, True)
+    if not idt.get("codigo"):
+        return None, False
+    empresa = session.get(Company, item.company_id)
+    if empresa is None:
+        return None, True
+    dossie = fatos_mod.assinatura(fatos_mod.fatos_empresa(session, empresa))
+    for t in session.scalars(
+        select(TaxThesis)
+        .where(
+            TaxThesis.status == "concluida",
+            TaxThesis.tipo_codigo == idt.get("tipo_codigo"),
+            TaxThesis.codigo == idt["codigo"],
+            TaxThesis.cenario == item.cenario,
+            TaxThesis.data_referencia == audit.data_referencia,
+        )
+        .order_by(TaxThesis.created_at.desc())
+    ):
+        if (t.fatos_empresa or {}) == dossie:
+            return t, False
+    return None, True
+
+
+REAPLICADO, MANTIDO, REANALISAR = "reaplicado", "mantido", "reanalisar"
+
+
+def reaplicar_item(session: Session, item: AuditItem, motivo: str = "regras atuais reaplicadas (sem IA)") -> str:
+    """Refaz a identidade e a avaliação do item com as regras atuais, a partir das respostas da IA já
+    gravadas (ADR 0029). Não chama a IA. Devolve "reaplicado", "mantido" ou "reanalisar".
+
+    Item aprovado por uma pessoa: a decisão dela nunca muda. A análise mostrada (status, dimensões, Imposto
+    Seletivo) só é atualizada quando as regras atuais chegam ao mesmo resultado que a pessoa aprovou."""
+    from app.pipeline import analista
+
+    if item.ignorado or not item.identidade or item.status not in STATUS_REVISAVEIS_ITEM:
+        return MANTIDO
+    if item.revisao_status == StatusRevisao.REJEITADO:
+        return MANTIDO
+    humano = item.revisao_status == StatusRevisao.APROVADO and not item.aprovado_automaticamente
+    audit = session.get(Audit, item.audit_id)
+    if audit is None:
+        return MANTIDO
+    state = analista.estado_do_registro(session, item)
+    idt = analista.identidade(state)
+    # Aprovado por pessoa: vale também a tese atual da família (mesmo dossiê), porque só se atualiza a análise
+    # quando ela chega ao mesmo resultado que a pessoa aprovou.
+    tese, reanalisar = tese_para_reaplicar(session, item, audit, idt, aceitar_atual=humano)
+    if reanalisar:
+        return MANTIDO if humano else REANALISAR
+    anterior = item.identidade
+    item.identidade = idt
+    ent = entrada(session, item, audit, tese, tese_falha=state.tese_falha, base_incompleta=state.base_incompleta)
+    av = avaliar(ent)
+    if humano and not (
+        av.status == StatusItem.CLASSIFICADO
+        and av.cclasstrib == item.final_cclasstrib
+        and idt.get("codigo") == item.final_codigo
+        and not av.ajuste_cadastro
+        and not av.perguntas
+    ):
+        item.identidade = anterior  # as regras atuais não chegam ao que a pessoa aprovou: nada muda
+        return MANTIDO
+    motivos_id = [m for m in item.motivos or [] if m not in av.motivos and m not in MOTIVOS_DA_AVALIACAO]
+    aplicar(session, item, audit, av, tese, motivos_identidade=motivos_id, motivo_versao=motivo)
+    return REAPLICADO
+
+
+STATUS_REVISAVEIS_ITEM = (
+    StatusItem.CLASSIFICADO,
+    StatusItem.AGUARDANDO_INFORMACAO,
+    StatusItem.REVISAO_CONTADOR,
+    StatusItem.REVISAO_ESPECIALISTA,
+)
+
+
+MOTIVOS_DA_AVALIACAO = {
     "FATO_PENDENTE",
     "CONFLITO_NORMATIVO",
     "SEM_HIPOTESE_SUSTENTADA",
     "SUJEITO_A_IMPOSTO_SELETIVO",
     "TESE_NAO_CONCLUIDA",
     "BASE_REFERENCIA_INCOMPLETA",
+    "PRODUTO_CITADO_NA_LEI",
+    "DECISAO_ANTERIOR_DIVERGENTE",
 }

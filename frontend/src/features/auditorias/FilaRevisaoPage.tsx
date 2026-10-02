@@ -1,5 +1,5 @@
 import { Link, useParams } from "@tanstack/react-router";
-import { ArrowLeft, CheckCircle2, Keyboard } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Keyboard, Layers, List } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Cabecalho, EstadoVazio, SeloStatus } from "@/components/dominio";
 import { Button, Dialog, DialogContent, Kbd, Painel, Progresso, Select, Skeleton } from "@/components/ui/primitives";
@@ -7,15 +7,18 @@ import { fmtCodigo, fmtNum } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useAuditoria, useItens, type LinhaItem } from "./comum";
 import { DetalheItem } from "./DetalheItem";
+import { GruposRevisao } from "./GruposRevisao";
 
 type Ordem = "incertos" | "linha" | "analise";
 
 const REVISAVEIS = ["classificado", "aguardando_informacao", "revisao_contador", "revisao_especialista"];
 const PESO_CONFIANCA: Record<string, number> = { baixa: 0, incompleta: 1, media: 2, alta: 3 };
 
-export function ordenarFila(itens: LinhaItem[], filtro: string, ordem: Ordem): LinhaItem[] {
+export function ordenarFila(itens: LinhaItem[], filtro: string, ordem: Ordem, soIds?: string[] | null): LinhaItem[] {
+  const ids = soIds ? new Set(soIds) : null;
   const fila = itens.filter(
-    (i) => i.revisao_status === "pendente" && REVISAVEIS.includes(i.status) && (filtro === "todos" || i.status === filtro),
+    (i) =>
+      (ids ? ids.has(i.id) : i.revisao_status === "pendente") && REVISAVEIS.includes(i.status) && (filtro === "todos" || i.status === filtro),
   );
   const peso: Record<string, number> = { revisao_especialista: 0, revisao_contador: 1, aguardando_informacao: 2, classificado: 3 };
   if (ordem === "incertos")
@@ -35,15 +38,30 @@ export function FilaRevisaoPage() {
 function Fila({ id, nome, itens }: { id: string; nome: string; itens: LinhaItem[] }) {
   const [filtro, setFiltroEstado] = useState("todos");
   const [ordem, setOrdemEstado] = useState<Ordem>("analise");
+  // Revisão por grupo (ADR 0029): uma decisão resolve os itens iguais. "Ver itens" abre a fila só com eles.
+  const [modo, setModo] = useState<"grupo" | "item">("grupo");
+  const [soIds, setSoIds] = useState<string[] | null>(null);
   // A fila é "congelada" ao abrir e ao mudar filtros, para que itens aprovados não sumam sob o cursor.
   const [fila, setFila] = useState<LinhaItem[]>(() => ordenarFila([...itens], "todos", "analise"));
   const [atualId, setAtualId] = useState<string | null>(() => fila[0]?.id ?? null);
   const [ajuda, setAjuda] = useState(false);
   const [revisadosSessao, setRevisadosSessao] = useState(0);
-  const refazer = (f: string, o: Ordem) => {
-    const nova = ordenarFila([...itens], f, o);
+  const refazer = (f: string, o: Ordem, ids: string[] | null = soIds) => {
+    const nova = ordenarFila([...itens], f, o, ids);
     setFila(nova);
     setAtualId(nova[0]?.id ?? null);
+  };
+  const verItens = (ids: string[]) => {
+    setSoIds(ids);
+    setModo("item");
+    refazer(filtro, ordem, ids);
+  };
+  const mudarModo = (m: "grupo" | "item") => {
+    setModo(m);
+    if (m === "item") {
+      setSoIds(null);
+      refazer(filtro, ordem, null);
+    }
   };
   const setFiltro = (f: string) => {
     setFiltroEstado(f);
@@ -108,6 +126,24 @@ function Fila({ id, nome, itens }: { id: string; nome: string; itens: LinhaItem[
         subtitulo={`${fmtNum(revisados)} de ${fmtNum(fila.length)} revisados nesta fila · ${fmtNum(revisadosSessao)} decisões nesta sessão`}
         acoes={
           <>
+            <div className="flex rounded-md border border-regua p-0.5" role="radiogroup" aria-label="Modo de revisão">
+              {(
+                [
+                  ["grupo", "Por grupo", Layers],
+                  ["item", "Item a item", List],
+                ] as const
+              ).map(([m, rotulo, Icone]) => (
+                <button
+                  key={m}
+                  role="radio"
+                  aria-checked={modo === m}
+                  onClick={() => mudarModo(m)}
+                  className={cn("inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs", modo === m ? "bg-tinta text-papel" : "text-tinta-2 hover:bg-superficie-2")}
+                >
+                  <Icone className="size-3.5" aria-hidden /> {rotulo}
+                </button>
+              ))}
+            </div>
             <Select aria-label="Filtrar fila" className="w-48" valor={filtro} aoMudar={setFiltro} opcoes={[{ valor: "todos", rotulo: "Todos os níveis" }, { valor: "revisao_especialista", rotulo: "Revisão do especialista" }, { valor: "revisao_contador", rotulo: "Revisão do contador" }, { valor: "aguardando_informacao", rotulo: "Aguardando informação" }, { valor: "classificado", rotulo: "Classificados" }]} />
             <Select aria-label="Ordem" className="w-52" valor={ordem} aoMudar={(v) => setOrdem(v as Ordem)} opcoes={[{ valor: "analise", rotulo: "Especialista, depois contador" }, { valor: "incertos", rotulo: "Menor confiança primeiro" }, { valor: "linha", rotulo: "Ordem da planilha" }]} />
             <Button variant="fantasma" onClick={() => setAjuda(true)}>
@@ -117,7 +153,17 @@ function Fila({ id, nome, itens }: { id: string; nome: string; itens: LinhaItem[
         }
       />
       <Progresso valor={fila.length ? (revisados / fila.length) * 100 : 0} rotulo="Progresso da revisão" className="mb-4" />
-      {fila.length === 0 ? (
+      {modo === "item" && soIds ? (
+        <p className="mb-3 text-xs text-tinta-2">
+          Mostrando só os {fmtNum(soIds.length)} itens do grupo.{" "}
+          <button className="underline" onClick={() => mudarModo("grupo")}>
+            Voltar aos grupos
+          </button>
+        </p>
+      ) : null}
+      {modo === "grupo" ? (
+        <GruposRevisao auditId={id} aoVerItens={verItens} />
+      ) : fila.length === 0 ? (
         <EstadoVazio icone={<CheckCircle2 className="size-8 text-conferido" />} titulo="Nada pendente nesta fila" descricao="Todos os itens deste filtro já foram revisados. Mude o filtro ou vá para a exportação." acao={<Button asChild variant="primario"><Link to="/auditorias/$id/exportar" params={{ id }}>Ir para exportação</Link></Button>} />
       ) : (
         <div className="grid gap-4 lg:grid-cols-[20rem_1fr]">

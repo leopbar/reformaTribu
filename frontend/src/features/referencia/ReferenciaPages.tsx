@@ -54,7 +54,7 @@ export function BaseReferenciaPage() {
   if (!st.data) return <Skeleton className="h-64" />;
   return (
     <>
-      <Cabecalho titulo="Base normativa e tabelas oficiais" subtitulo="Global e compartilhada por todas as organizações. Cada importação cria uma versão nova com data e hash; nada é sobrescrito. É daqui que o analista cita a lei." acoes={<Button asChild variant="secundario"><Link to="/referencia/regras">Regras curadas (opcional)</Link></Button>} />
+      <Cabecalho titulo="Base normativa e tabelas oficiais" subtitulo="Global e compartilhada por todas as organizações. Cada importação cria uma versão nova com data e hash; nada é sobrescrito. É daqui que o analista cita a lei." acoes={<Button asChild variant="secundario"><Link to="/referencia/regras">Regras legais (resumo)</Link></Button>} />
       {!st.data.completa ? <Aviso tom="atencao" titulo="Base incompleta" className="mb-4">Faltando: {st.data.faltando.map((f) => FONTES[f] ?? f).join(", ")}. Sem elas o analista não consegue investigar: os itens vão para revisão do contador.</Aviso> : null}
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         {Object.entries(FONTES).filter(([f]) => f !== "normas").map(([f, rotulo]) => {
@@ -129,7 +129,198 @@ export function BaseReferenciaPage() {
   );
 }
 
+type ResumoRegras = Schemas["ResumoRegras"];
+type CodigoNoUso = Schemas["CodigoNoUso"];
+
+const CONFIRMA = 3;
+
+function vezes(n: number) {
+  return n === 1 ? "1 vez" : `${n} vezes`;
+}
+
+/** Uma linha por código: o que as pessoas já decidiram e quanto falta para confirmar. */
+function SituacaoCodigo({ c, mostrarItens }: { c: CodigoNoUso; mostrarItens?: boolean }) {
+  const itens = mostrarItens && c.itens ? ` · ${fmtNum(c.itens)} ${c.itens === 1 ? "item" : "itens"}` : "";
+  let texto: string;
+  let cor = "text-tinta-2";
+  if (c.situacao === "confirmado") {
+    texto = `confirmado: ${c.cclasstrib} decidido ${vezes(c.decisoes)}`;
+    cor = "text-conferido";
+  } else if (c.situacao === "em_confirmacao") {
+    texto = `${c.cclasstrib} decidido ${vezes(c.decisoes)} · faltam ${c.faltam} para confirmar`;
+    cor = "text-ocre";
+  } else if (c.situacao === "divergem") {
+    texto = "as decisões das pessoas não batem entre si: revise";
+    cor = "text-perigo";
+  } else if (c.situacao === "outro") {
+    texto = `pessoas decidiram ${c.cclasstrib} (${vezes(c.decisoes)})`;
+  } else {
+    texto = "nenhuma decisão ainda";
+    cor = "text-tinta-3";
+  }
+  return (
+    <li className="flex flex-wrap items-baseline gap-x-2 text-xs">
+      <span className="codigo font-medium">{c.codigo}</span>
+      <span className={cor}>{texto}{itens}</span>
+      {c.ramo ? <span className="text-2xs text-tinta-3">ramo {c.ramo}</span> : null}
+    </li>
+  );
+}
+
+function Numero({ valor, rotulo, tom }: { valor: number; rotulo: string; tom?: string }) {
+  return (
+    <Painel className="p-4">
+      <p className={cn("num text-2xl font-semibold", tom)}>{fmtNum(valor)}</p>
+      <p className="text-xs text-tinta-3">{rotulo}</p>
+    </Painel>
+  );
+}
+
+function ListaRegrasNoUso({ regras }: { regras: Schemas["RegraNoUso"][] }) {
+  return (
+    <ul className="divide-y divide-regua">
+      {regras.map((x) => (
+        <li key={x.regra_id} className="px-5 py-3">
+          <div className="flex flex-wrap items-baseline gap-x-3">
+            {x.situacao === "confirmada" ? <Check className="size-4 shrink-0 self-center text-conferido" /> : null}
+            <span className="font-medium">{x.titulo}</span>
+            {x.cclasstrib ? <span className="codigo text-xs text-tinta-3">cClassTrib {x.cclasstrib}</span> : null}
+          </div>
+          <p className="mt-1 text-xs text-tinta-3">{x.descricao}</p>
+          <ul className="mt-2 space-y-1">{x.codigos.map((c) => <SituacaoCodigo key={c.codigo} c={c} />)}</ul>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Resumo das regras pelo uso (ADR 0028): nada a aprovar, só o que as decisões já confirmaram. */
 export function RegrasPage() {
+  const orgs = useQuery({ queryKey: ["plataforma-orgs"], queryFn: () => ok(api.GET("/api/plataforma/organizacoes")) });
+  const [escolhida, setEscolhida] = useState("");
+  const orgId = escolhida || orgs.data?.find((o) => o.ativo)?.id || "";
+  const q = useQuery({
+    queryKey: ["regras-resumo", orgId],
+    queryFn: () => ok(api.GET("/api/regras/resumo", { params: { query: { org_id: orgId || undefined } } })),
+    enabled: !orgs.isLoading,
+  });
+  if (q.isError) return <EstadoErro erro={q.error} />;
+  const r: ResumoRegras | undefined = q.data;
+  const abertas = r?.divergencias.filter((d) => !d.resolvida) ?? [];
+  const resolvidas = r?.divergencias.filter((d) => d.resolvida) ?? [];
+  const confirmadas = r?.regras_em_uso.filter((x) => x.situacao === "confirmada") ?? [];
+  const emConfirmacao = r?.regras_em_uso.filter((x) => x.situacao !== "confirmada") ?? [];
+  return (
+    <>
+      <Cabecalho
+        voltar={<Link to="/referencia" className="inline-flex items-center gap-1 text-xs text-tinta-3 hover:text-tinta"><ArrowLeft className="size-3.5" /> Base de referência</Link>}
+        titulo="Regras legais (LC 214/2025)"
+        subtitulo={`Resumo automático: você não precisa aprovar nada aqui. O sistema aprende com as classificações que as pessoas aprovam nas auditorias: 1 aprovação aumenta a confiança, 2 aumentam mais e ${CONFIRMA} confirmam o enquadramento daquele NCM no mesmo ramo (mercado com mercado, farmácia com farmácia).`}
+        acoes={<Button asChild variant="fantasma"><Link to="/referencia/regras/detalhes">Detalhes técnicos</Link></Button>}
+      />
+      {orgs.data?.length ? (
+        <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-tinta-3">Organização:</span>
+          <Select aria-label="Organização" className="w-72" valor={orgId} aoMudar={setEscolhida} opcoes={orgs.data.map((o) => ({ valor: o.id, rotulo: o.nome }))} />
+          <span className="text-xs text-tinta-3">As decisões de cada organização valem só para ela.</span>
+        </div>
+      ) : null}
+      {!r ? <Skeleton className="h-64" /> : null}
+      {r && !r.organizacao_selecionada ? (
+        <Aviso tom="info" titulo="Selecione uma organização" className="mb-4">
+          As decisões de cada organização ficam só nela. Escolha a organização no topo da tela para ver o que já foi confirmado pelo uso e quais divergências tocam os itens dela.
+        </Aviso>
+      ) : null}
+      {r && r.organizacao_selecionada ? (
+        <>
+          <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <Numero valor={r.decisoes} rotulo="decisões de pessoas aprendidas" />
+            <Numero valor={confirmadas.length} rotulo="regras confirmadas pelo uso" tom="text-conferido" />
+            <Numero valor={emConfirmacao.length} rotulo="regras em confirmação" tom="text-ocre" />
+            <Numero valor={abertas.length} rotulo="divergências que tocam seus itens" tom={abertas.length ? "text-perigo" : undefined} />
+          </div>
+
+          <Painel className="mb-6">
+            <div className="border-b border-regua px-5 py-3">
+              <h2 className="text-base">Precisa de um olhar</h2>
+              <p className="mt-1 text-sm text-tinta-3">
+                Pontos em que a tabela oficial e a lei não batem, em códigos que aparecem nos seus itens. Itens desses códigos vão para revisão. Como resolver: revise os itens na auditoria e aprove (ou corrija) o enquadramento; com {CONFIRMA} decisões iguais, a divergência fica resolvida para aquele código sozinha.
+              </p>
+            </div>
+            {abertas.length === 0 ? <p className="px-5 py-4 text-sm text-conferido">Nenhuma divergência em aberto nos seus itens.</p> : null}
+            <ul className="divide-y divide-regua">
+              {abertas.map((d) => (
+                <li key={d.regra_id} className="px-5 py-4">
+                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <AlertTriangle className={cn("size-4 shrink-0 self-center", d.gravidade === "alta" ? "text-perigo" : "text-ocre")} />
+                    <span className="font-medium">{d.titulo}</span>
+                    {d.cclasstrib ? <span className="codigo text-xs text-tinta-3">cClassTrib {d.cclasstrib}</span> : null}
+                    <span className="text-xs text-tinta-3">afeta {fmtNum(d.itens)} {d.itens === 1 ? "item" : "itens"}</span>
+                  </div>
+                  <p className="mt-1 text-xs text-tinta-3">{d.descricao}</p>
+                  <p className="mt-2 text-sm text-tinta-2">{d.mensagens[0]}</p>
+                  {d.mensagens.length > 1 ? (
+                    <details className="mt-1 text-xs text-tinta-3">
+                      <summary className="cursor-pointer">mais {d.mensagens.length - 1} ponto(s)</summary>
+                      {d.mensagens.slice(1).map((m) => <p key={m} className="mt-1">{m}</p>)}
+                    </details>
+                  ) : null}
+                  <ul className="mt-2 space-y-1">{d.codigos.map((c) => <SituacaoCodigo key={c.codigo} c={c} mostrarItens />)}</ul>
+                </li>
+              ))}
+            </ul>
+            {r.divergencias_sem_itens ? (
+              <p className="border-t border-regua px-5 py-3 text-xs text-tinta-3">
+                Outras {fmtNum(r.divergencias_sem_itens)} divergências da tabela oficial ainda não apareceram em nenhum item desta organização: não pedem nada agora.
+              </p>
+            ) : null}
+          </Painel>
+
+          <Painel className="mb-6">
+            <div className="border-b border-regua px-5 py-3">
+              <h2 className="text-base">Confirmadas pelo uso</h2>
+              <p className="mt-1 text-sm text-tinta-3">Regras com códigos que já tiveram {CONFIRMA} decisões iguais de pessoas. Novos itens desses códigos que chegarem ao mesmo resultado podem sair aprovados sem revisão.</p>
+            </div>
+            {confirmadas.length === 0 ? <p className="px-5 py-4 text-sm text-tinta-3">Ainda nenhuma. Elas aparecem conforme as classificações forem aprovadas.</p> : null}
+            <ListaRegrasNoUso regras={confirmadas} />
+          </Painel>
+
+          <Painel className="mb-6">
+            <div className="border-b border-regua px-5 py-3">
+              <h2 className="text-base">Em confirmação</h2>
+              <p className="mt-1 text-sm text-tinta-3">Regras com 1 ou 2 decisões iguais. Já ajudam: com 2, avisos jurídicos leves deixam de travar o item.</p>
+            </div>
+            {emConfirmacao.length === 0 ? <p className="px-5 py-4 text-sm text-tinta-3">Nenhuma ainda.</p> : null}
+            <ListaRegrasNoUso regras={emConfirmacao} />
+          </Painel>
+
+          {resolvidas.length ? (
+            <Painel className="mb-6">
+              <details>
+                <summary className="cursor-pointer px-5 py-3 text-base">Divergências resolvidas pelo uso ({resolvidas.length})</summary>
+                <ul className="divide-y divide-regua border-t border-regua">
+                  {resolvidas.map((d) => (
+                    <li key={d.regra_id} className="px-5 py-3">
+                      <span className="font-medium">{d.titulo}</span> <span className="text-xs text-tinta-3">{d.descricao}</span>
+                      <ul className="mt-1 space-y-1">{d.codigos.map((c) => <SituacaoCodigo key={c.codigo} c={c} mostrarItens />)}</ul>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            </Painel>
+          ) : null}
+        </>
+      ) : null}
+      {r ? (
+        <p className="text-xs text-tinta-3">
+          Base: {fmtNum(r.total_regras)} regras geradas da LC 214/2025 e das tabelas oficiais ({fmtNum(r.aprovadas)} aprovadas manualmente, {fmtNum(r.total_divergencias)} com divergência). A revisão manual continua em <Link to="/referencia/regras/detalhes" className="underline">detalhes técnicos</Link>, mas não é necessária.
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+export function RegrasDetalhesPage() {
   const qc = useQueryClient();
   const navegar = useNavigate();
   const [status, setStatus] = useState("pendente_revisao");
@@ -165,9 +356,9 @@ export function RegrasPage() {
   return (
     <>
       <Cabecalho
-        voltar={<Link to="/referencia" className="inline-flex items-center gap-1 text-xs text-tinta-3 hover:text-tinta"><ArrowLeft className="size-3.5" /> Base de referência</Link>}
-        titulo="Regras legais (LC 214/2025)"
-        subtitulo="Opcional. O analista raciocina a partir do texto legal e das tabelas oficiais; uma regra aprovada aqui vira precedente: aumenta a confiança quando confirma a conclusão e aponta conflito quando diverge."
+        voltar={<Link to="/referencia/regras" className="inline-flex items-center gap-1 text-xs text-tinta-3 hover:text-tinta"><ArrowLeft className="size-3.5" /> Resumo das regras</Link>}
+        titulo="Regras legais — detalhes técnicos"
+        subtitulo="Nada aqui é obrigatório: o analista raciocina a partir do texto legal e das tabelas oficiais, e as decisões aprovadas nas auditorias já reforçam a confiança sozinhas. Uma regra aprovada aqui vira precedente."
         acoes={
           <>
             <Button variant="fantasma" onClick={() => void baixarArquivo("/api/regras-yaml", "regras.yaml").catch((e) => toast.error(mensagemErro(e)))}><Download /> Exportar YAML</Button>
@@ -336,7 +527,7 @@ function RevisaoRegra({ id, dados }: { id: string; dados: Schemas["RegraDetalhe"
   return (
     <>
       <Cabecalho
-        voltar={<Link to="/referencia/regras" className="inline-flex items-center gap-1 text-xs text-tinta-3 hover:text-tinta"><ArrowLeft className="size-3.5" /> Regras</Link>}
+        voltar={<Link to="/referencia/regras/detalhes" className="inline-flex items-center gap-1 text-xs text-tinta-3 hover:text-tinta"><ArrowLeft className="size-3.5" /> Regras (detalhes técnicos)</Link>}
         titulo={String(r.dispositivo_legal)}
         subtitulo={<span><span className="codigo">{String(r.slug)} v{String(r.versao)}</span> · <span className={STATUS_REGRA[r.status]?.cor}>{STATUS_REGRA[r.status]?.rotulo}</span> · origem: {String(r.origem).replaceAll("_", " ")}</span>}
       />

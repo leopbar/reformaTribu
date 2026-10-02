@@ -61,6 +61,39 @@ def _norm(t: str) -> str:
     return unicodedata.normalize("NFKD", t or "").encode("ascii", "ignore").decode().lower().strip()
 
 
+# Palavras do campo "tipo" do ERP em texto livre (ADR 0029): "Produção interna", "Revenda de bebida…",
+# "Medicamento sob prescrição" dizem que o item é mercadoria; "Prestação de serviço", que é serviço.
+_TIPO_SERVICO = ("servic", "prestacao", "mao de obra")
+_TIPO_PRODUTO = (
+    "produ",  # produto, produção, produtor
+    "revenda",
+    "mercadoria",
+    "medicamento",
+    "cosmetic",
+    "higiene",
+    "industri",
+    "fabrica",
+    "frigorific",
+    "distribuidor",
+    "importador",
+)
+
+
+def tipo_do_erp(tipo_bruto: str | None) -> str | None:
+    """'produto', 'servico' ou None (não dá para saber) a partir do campo "tipo" do ERP."""
+    if not tipo_bruto:
+        return None
+    t = _norm(tipo_bruto)
+    curto = _TIPOS.get(t[:12].split(" ")[0])
+    if curto:
+        return curto
+    if any(p in t for p in _TIPO_SERVICO):
+        return "servico"
+    if any(p in t for p in _TIPO_PRODUTO):
+        return "produto"
+    return None
+
+
 def hash_descricao(descricao_normalizada: str) -> str:
     base = re.sub(r"\s+", " ", _norm(descricao_normalizada))
     return hashlib.sha256(base.encode()).hexdigest()
@@ -142,7 +175,7 @@ def limpar(
             cclasstrib_atual=normalizar_cclasstrib(_val(reg, mapeamento, "cclasstrib_atual", 10)),
             ncm=None,
             nbs=None,
-            tipo=_TIPOS.get(_norm(tipo_bruto or "")[:12].split(" ")[0] if tipo_bruto else ""),
+            tipo=tipo_do_erp(tipo_bruto),
         )
         if not descricao:
             if not any((v or "").strip() for v in reg.values()):

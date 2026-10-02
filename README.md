@@ -12,7 +12,8 @@ enquadramento válido **numa data de vigência** (inicialmente 2027) e só entã
 4. **Aplica aos fatos do item** — fatos com origem (pessoa, ERP, cadastro, texto explícito); suposição da IA
    não vira fato.
 5. **Pergunta só o que muda o resultado** — agrupado por empresa, categoria ou NCM; a resposta reclassifica
-   os itens na hora, sem novo custo de IA.
+   os itens na hora, sem novo custo de IA. Dúvida de NCM que não muda o imposto não trava o item: o código
+   vai para a lista **Ajustes de cadastro** (ADR 0029).
 6. **Explica a confiança por dimensão** — e separa **Classificado**, **Aguardando informação**,
    **Revisão do contador** e **Revisão do especialista**.
 7. **Guarda o dossiê de decisão** — perfil tributário versionado por item, cenário e vigência, auditável meses depois.
@@ -35,7 +36,13 @@ enquadramento válido **numa data de vigência** (inicialmente 2027) e só entã
 - **Regras curadas são opcionais**: uma regra aprovada vira precedente — aumenta a confiança quando
   confirma a conclusão e aponta conflito quando diverge. Não é mais pré-requisito.
 - **Revisão rápida**: tabela virtualizada, perguntas agrupadas, famílias com o raciocínio completo,
-  dossiê de decisão por item, fila de revisão por nível, aprovação em lote, desfazer, exportação e PDF.
+  dossiê de decisão por item, fila de revisão **por grupo** (uma decisão resolve os itens iguais), aprovação
+  em lote, desfazer, lista de ajustes de cadastro, exportação e PDF.
+- **Só vai para uma pessoa o que muda o imposto** (ADR 0029): o NCM do ERP conta como voto, o Imposto
+  Seletivo segue o papel da empresa (quem só revende não recolhe), conflitos dizem qual fato os resolve,
+  falha da plataforma de IA pausa e retoma sozinha, e "Reaplicar regras (sem IA)" atualiza auditorias
+  concluídas sem custo. A medição sem IA (`python -m app.evals.replay`) mostra quantos itens iriam para uma
+  pessoa e se algum sairia errado.
 - **Multi-tenant** com Row-Level Security no PostgreSQL, papéis, log de auditoria imutável.
 
 ## Requisitos
@@ -105,6 +112,8 @@ make logs S=worker   # logs de um serviço
 | Contêiner `embeddings` reiniciando (código 137) | Falta de memória. Aumente a memória do Docker ou mantenha o modelo `multilingual-e5-base`. O `bge-m3` precisa de 6 GB+ livres. |
 | "A chave da API da Anthropic não está configurada" | Defina `ANTHROPIC_API_KEY` no `.env` e rode `docker compose up -d api worker`. |
 | Auditoria "Pausada (orçamento de IA)" | O orçamento mensal da organização foi atingido. Aumente em Configurações e clique em Retomar. |
+| Auditoria "Pausada (a IA não respondeu)" | A plataforma de IA recusou ou ficou fora do ar (ex.: sem créditos). Nenhum item foi para revisão por isso. Recarregue os créditos ou troque o modelo em Modelos de IA: a auditoria retoma sozinha (10 a 120 min) ou na hora, em Retomar. |
+| Itens antigos ainda vão para revisão depois de uma melhoria nas regras | Clique em "Reaplicar regras (sem IA)" na auditoria: refaz a decisão sem custo e mostra quantos itens precisam da IA de novo. |
 | Porta já em uso ao subir | Ajuste `API_HOST_PORT`, `FRONTEND_HOST_PORT` etc. no `.env`. |
 | Itens parados em "Processando" | O beat reenfileira itens parados a cada 5 minutos; o grafo retoma do checkpoint sem repetir chamadas. |
 
@@ -114,5 +123,6 @@ make logs S=worker   # logs de um serviço
 - [docs/base-de-referencia.md](docs/base-de-referencia.md) — fontes oficiais e como atualizá-las.
 - [docs/design-system.md](docs/design-system.md) — sistema de design “Conferência”.
 - [docs/operacao.md](docs/operacao.md) — produção, segurança, LGPD, backups e monitoramento.
-- [evals/README.md](evals/README.md) — harness de avaliação e formato do conjunto-ouro.
+- [evals/README.md](evals/README.md) — medição sem IA, harness de avaliação e formato do conjunto-ouro.
+- [docs/DOSSIE_FLUXO_AGENTES.md](docs/DOSSIE_FLUXO_AGENTES.md) — os agentes, um a um, em linguagem simples.
 - [docs/adr/](docs/adr/) — registros de decisões de arquitetura.

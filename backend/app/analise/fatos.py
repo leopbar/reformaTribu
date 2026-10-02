@@ -142,8 +142,9 @@ def fatos_empresa(session: Session, empresa: Company) -> dict[str, Fato]:
 
 
 # Dados cadastrais que não mudam o raciocínio jurídico de uma família: ficam fora da chave da tese,
-# para que empresas com o mesmo perfil reaproveitem a mesma investigação.
-FORA_DA_ASSINATURA = {"uf", "cnae", "atividade_principal"}
+# para que empresas com o mesmo perfil reaproveitem a mesma investigação. Quem recolhe o Imposto Seletivo
+# (fabrica ou importa?) é decidido pelo sistema depois da tese (ADR 0029), não pelo Jurista.
+FORA_DA_ASSINATURA = {"uf", "cnae", "atividade_principal", "fabrica_ou_importa_seletivo"}
 
 
 def assinatura(fatos: dict[str, Fato]) -> dict[str, str]:

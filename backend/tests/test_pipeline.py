@@ -780,9 +780,12 @@ def test_codigo_citado_na_lei_entra_na_prova_e_a_troca_vai_ao_contador(ambiente:
     assert i.codigo_sugerido == "38089419"
     assert i.identidade["situacao"] == "corrigido"
     assert "Anexo VIII" in i.identidade["corrigido_pela_lei"]
-    # A troca motivada pela lei nunca é aprovada sozinha.
-    assert i.status == "revisao_contador"
-    assert i.dimensoes["codigo_fiscal"]["situacao"] == "atencao"
+    # A troca não muda o imposto aqui (ADR 0029): o IBS/CBS sai, e o NCM novo espera uma pessoa na lista
+    # "Ajustes de cadastro". Enquanto isso, a exportação mantém o NCM do ERP.
+    assert i.status == "classificado"
+    assert i.ajuste_cadastro_status == "pendente"
+    assert i.ajuste_cadastro["sugerido"] == "38089419" and i.ajuste_cadastro["erp"] == "28289011"
+    assert i.final_codigo == "28289011"
 
 
 def test_resposta_em_grupo_vale_so_para_os_itens_listados(ambiente: dict[str, Any]) -> None:
@@ -825,8 +828,9 @@ def test_restaurante_espresso_sem_ncm_sai_pelo_regime_da_operacao(ambiente: dict
     c = _item(org, cafe)
     assert c.identidade["situacao"] == "indefinido"
     assert (c.cclasstrib_sugerido, c.cst_sugerido, c.hipotese) == ("200047", "200", "OP-restaurante")
-    assert c.dimensoes["codigo_fiscal"]["situacao"] == "atencao"
-    assert c.status == "revisao_contador"  # o NCM da nota ainda precisa ser definido por alguém
+    assert c.dimensoes["codigo_fiscal"]["situacao"] == "ok"  # o NCM vai para "Ajustes de cadastro"
+    assert c.ajuste_cadastro_status == "pendente"
+    assert c.status == "revisao_contador"  # sem NCM, o Imposto Seletivo não foi avaliado
     assert {f["atributo"]: f["origem"] for f in c.fatos_usados} == {
         "preparado_no_estabelecimento": "descricao",
         "servido_como_alimentacao": "cadastro",
@@ -861,3 +865,260 @@ def test_farmacia_naldecon_recebe_os_codigos_de_medicamento_pela_lei(ambiente: d
     assert i.status == "aguardando_informacao"
     efeitos = {o["valor"]: o["efeito"] for o in i.perguntas[0]["opcoes"]}
     assert "200009" in efeitos["sim"] and "200032" in efeitos["nao"]
+
+
+# ---------------------------------------------------- menos revisão humana (ADR 0029) --
+def test_falha_da_plataforma_pausa_a_auditoria_e_nao_manda_o_item_para_revisao(
+    ambiente: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.audits import processing
+    from app.db.session import TenantContext, sync_tenant_session
+    from app.llm import gateway, provedores
+    from app.models import Audit
+
+    org = ambiente["org_id"]
+    aid, (item,) = ambiente["nova_auditoria"]([("SAB LIQ ERVA DOCE 250ML", "34011190")])
+    original = gateway._chamar
+
+    def sem_credito(req: Any) -> dict[str, Any]:
+        raise provedores.ErroTransitorio("HTTP 429: You have no credits remaining")
+
+    monkeypatch.setattr(gateway, "_chamar", sem_credito)
+    monkeypatch.setattr(gateway, "_espera", lambda tentativa, erro: 0.0)
+    enfileirados: list[uuid.UUID] = []
+    monkeypatch.setattr(processing, "enfileirar_itens", lambda a, o, ids: enfileirados.extend(ids))
+    processing.processar_itens(aid, org, [item])
+
+    i = _item(org, item)
+    assert i.status not in ("revisao_contador", "revisao_especialista", "erro")  # nada vai para uma pessoa
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        a = s.get(Audit, aid)
+        assert a.status == "pausada_ia" and a.configuracao["pausa_ia"]["seguidas"] == 1
+        assert "créditos" in (a.erro or "")
+    # Antes da hora marcada, a tarefa periódica não retoma; forçada (ou na hora), retoma.
+    assert processing.retomar_pausadas_por_ia(org) == 0
+    monkeypatch.setattr(gateway, "_chamar", original)
+    assert processing.retomar_pausadas_por_ia(org, forcar=True) == 1
+    assert enfileirados == [item]
+    processing.processar_itens(aid, org, enfileirados)
+    i = _item(org, item)
+    assert i.status in ("classificado", "aguardando_informacao", "revisao_contador")
+    assert i.codigo_sugerido == "34013000"
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        assert "pausa_ia" not in (s.get(Audit, aid).configuracao or {})
+
+
+def test_itens_parecidos_aprovados_por_pessoas_confirmam_o_ncm_do_erp(ambiente: dict[str, Any]) -> None:
+    from app.config import get_settings
+    from app.db.session import TenantContext, sync_tenant_session
+    from app.models import ApprovedMemory
+    from app.pipeline.nodes import _confirmacao_por_parecidos, parecidos_aprovados
+    from app.pipeline.state import ItemState
+
+    org, emp = ambiente["org_id"], ambiente["emp_id"]
+    dim = get_settings().embeddings_dim
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        for desc, cod in (("sabonete barra erva doce 90g", "34011190"), ("sabonete liquido 250ml", "34013000")):
+            s.add(
+                ApprovedMemory(
+                    org_id=org,
+                    company_id=emp,
+                    descricao_normalizada=desc,
+                    descricao_hash=desc,
+                    tipo_codigo="ncm",
+                    codigo=cod,
+                    atributos={},
+                )
+            )
+        s.flush()
+        # Os vetores que faltam são calculados na primeira busca.
+        viz = parecidos_aprovados(s, "sabonete barra erva doce 90g", vetor("sabonete barra erva doce 90g", dim))
+        assert viz[0]["codigo"] == "34011190" and viz[0]["similaridade"] > 0.99
+        assert all(m.embedding is not None for m in s.scalars(select(ApprovedMemory)))
+
+    st = ItemState(item_id="1", audit_id="1", org_id="1")
+    atual = {"tipo": "ncm", "codigo": "34011190", "existe": True, "folha": True, "vigente": True}
+    igual = [{"codigo": "34011190", "similaridade": 0.97, "descricao": "x", "tipo_codigo": "ncm"}]
+    assert _confirmacao_por_parecidos(st, atual, [], igual)["posicao_confirmacao"] == 0
+    # Um item parecido decidido com outro código impede a confirmação.
+    contra = [*igual, {"codigo": "34013000", "similaridade": 0.94, "descricao": "y", "tipo_codigo": "ncm"}]
+    assert _confirmacao_por_parecidos(st, atual, [], contra) is None
+    # Semelhança abaixo do limite não confirma.
+    assert _confirmacao_por_parecidos(st, atual, [], [{**igual[0], "similaridade": 0.93}]) is None
+    # A lei cita o produto com outro código: a IA precisa comparar.
+    assert _confirmacao_por_parecidos(st, atual, [{"citado_na_lei": "Anexo VIII"}], igual) is None
+
+
+def test_resposta_o_que_e_o_item_vira_memoria_e_reanalisa(ambiente: dict[str, Any]) -> None:
+    from app.analise import pendencias
+    from app.db.session import TenantContext, sync_tenant_session
+    from app.models import ApprovedMemory, AuditItem, Pendencia
+
+    org = ambiente["org_id"]
+    aid, (item,) = ambiente["nova_auditoria"]([("SUCO UVA 1L", "20096100")])
+    autor = pendencias.Autor(uuid.uuid4(), "op@teste.com.br")
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        i = s.get(AuditItem, item)
+        i.status, i.identidade = "aguardando_informacao", {"tipo_codigo": "ncm", "codigo": "20096100"}
+        p = Pendencia(
+            org_id=org,
+            audit_id=aid,
+            company_id=i.company_id,
+            atributo=pendencias.FATO_CODIGO,
+            escopo="grupo",
+            grupo_chave="ident:20096100-22021000",
+            grupo_rotulo="t",
+            pergunta="Qual destas descrições corresponde ao item?",
+            motivo="t",
+            opcoes=[{"valor": "20096100"}, {"valor": "22021000"}, {"valor": "outro"}],
+            nivel="operacional",
+            item_ids=[item],
+            status="aberta",
+            respostas_itens={},
+        )
+        s.add(p)
+        s.flush()
+        afetados = pendencias.responder(s, p.id, autor, valor="22021000")
+        reprocessar = pendencias.identificar_pela_resposta(s, p.id, autor, afetados)
+        assert reprocessar == [item]
+        mem = s.scalar(select(ApprovedMemory).where(ApprovedMemory.ativo.is_(True)))
+        assert mem.codigo == "22021000" and mem.aprovado_por == autor.user_id
+        assert s.get(AuditItem, item).status == "pendente"
+
+
+def _em_revisao(org: uuid.UUID, ids: list[uuid.UUID], *, ajuste: dict[str, Any] | None = None) -> None:
+    """Põe itens no estado de "revisão do contador" pelo Imposto Seletivo (mesma decisão para todos)."""
+    from app.db.session import TenantContext, sync_tenant_session
+    from app.models import AuditItem
+
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        for iid in ids:
+            i = s.get(AuditItem, iid)
+            i.status, i.nivel_revisao, i.revisao_status = "revisao_contador", "contador", "pendente"
+            i.identidade = {"tipo_codigo": "ncm", "codigo": i.ncm, "descricao_oficial": "a › b"}
+            i.tipo_codigo_sugerido, i.codigo_sugerido = "ncm", i.ncm
+            i.cclasstrib_sugerido, i.cst_sugerido, i.is_situacao = "000001", "000", "sujeito"
+            i.motivos, i.perguntas, i.fatos_usados = ["SUJEITO_A_IMPOSTO_SELETIVO"], [], []
+            i.dimensoes = {
+                "identificacao": {"rotulo": "Identificação", "situacao": "ok", "texto": ""},
+                "imposto_seletivo": {"rotulo": "Imposto Seletivo", "situacao": "atencao", "texto": "Anexo XVII"},
+            }
+            if ajuste:
+                i.ajuste_cadastro, i.ajuste_cadastro_status = ajuste, "pendente"
+
+
+def test_aprovar_um_item_vale_na_hora_para_os_iguais_e_desfaz_em_lote(ambiente: dict[str, Any]) -> None:
+    from app.db.session import TenantContext, sync_tenant_session
+    from app.review import service
+
+    org = ambiente["org_id"]
+    aid, ids = ambiente["nova_auditoria"](
+        [
+            ("REFRIGERANTE COLA 2L", "22021000"),
+            ("REFRIGERANTE COLA 600ML", "22021000"),
+            ("REFRIGERANTE GUARANA 2L", "22021000"),
+            ("SUCO UVA 1L", "20096100"),
+        ]
+    )
+    _em_revisao(org, ids)
+    revisor = service.Revisor(user_id=uuid.uuid4(), email="contador@teste.com.br")
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        grupos = service.grupos_de_revisao(s, aid)
+        assert [len(g.item_ids) for g in grupos] == [3, 1]  # uma decisão resolve os três refrigerantes
+        _, lote, n = service.aprovar_e_aplicar_aos_iguais(s, ids[0], revisor, "conferido")
+    assert n == 2 and lote is not None
+    assert [_item(org, i).revisao_status for i in ids] == ["aprovado", "aprovado", "aprovado", "pendente"]
+    assert _item(org, ids[1]).aprovado_automaticamente is False
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        assert service.desfazer_lote(s, aid, lote, revisor) == 2
+    assert [_item(org, i).revisao_status for i in ids[:3]] == ["aprovado", "pendente", "pendente"]
+
+
+def test_ajuste_de_cadastro_aceito_ou_mantido_define_o_ncm_exportado(ambiente: dict[str, Any]) -> None:
+    from app.analise.aplicacao import codigo_para_o_cadastro
+    from app.db.session import TenantContext, sync_tenant_session
+    from app.models import ApprovedMemory, AuditItem
+    from app.review import service
+
+    org = ambiente["org_id"]
+    aid, (a, b) = ambiente["nova_auditoria"]([("SAB LIQ ERVA DOCE 250ML", "34011190"), ("SABONETE X", "34011190")])
+    ajuste = {"tipo_codigo": "ncm", "erp": "34011190", "sugerido": "34013000", "alternativas": [], "texto": "t"}
+    _em_revisao(org, [a, b], ajuste=ajuste)
+    revisor = service.Revisor(user_id=uuid.uuid4(), email="contador@teste.com.br")
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        # Enquanto pendente, a exportação mantém o NCM do ERP.
+        assert codigo_para_o_cadastro(s.get(AuditItem, a)) == "34011190"
+        assert service.decidir_ajustes_cadastro(s, aid, [a], "aceitar", revisor) == 1
+        assert service.decidir_ajustes_cadastro(s, aid, [b], "manter", revisor) == 1
+        assert codigo_para_o_cadastro(s.get(AuditItem, a)) == "34013000"
+        assert codigo_para_o_cadastro(s.get(AuditItem, b)) == "34011190"
+        codigos = {m.codigo for m in s.scalars(select(ApprovedMemory).where(ApprovedMemory.ativo.is_(True)))}
+        assert codigos == {"34013000", "34011190"}  # a decisão sobre o NCM vira memória da empresa
+    assert _item(org, a).ajuste_cadastro_status == "aceito"
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        service.desfazer(s, a, revisor)
+    assert _item(org, a).ajuste_cadastro_status == "pendente"
+
+
+def test_pergunta_da_empresa_respondida_num_item_vale_para_a_empresa(ambiente: dict[str, Any]) -> None:
+    """O usuário respondeu "não fabrica nem importa" pelo botão do item: a resposta é da empresa."""
+    from app.analise import pendencias
+    from app.db.session import TenantContext, sync_tenant_session
+    from app.models import CompanyFact, Pendencia
+
+    org = ambiente["org_id"]
+    aid, (a, b) = ambiente["nova_auditoria"]([("CERVEJA LATA 350ML", "22030000"), ("VINHO TINTO 750ML", "22042100")])
+    autor = pendencias.Autor(uuid.uuid4(), "op@teste.com.br")
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        emp = ambiente["emp_id"]
+        p = Pendencia(
+            org_id=org,
+            audit_id=aid,
+            company_id=emp,
+            atributo="fabrica_ou_importa_seletivo",
+            escopo="empresa",
+            grupo_chave="",
+            grupo_rotulo="Toda a empresa",
+            pergunta="A empresa fabrica ou importa?",
+            motivo="t",
+            opcoes=[{"valor": "nao"}, {"valor": "sim"}],
+            nivel="operacional",
+            item_ids=[a, b],
+            status="aberta",
+            respostas_itens={},
+        )
+        s.add(p)
+        s.flush()
+        afetados = pendencias.responder(s, p.id, autor, respostas_itens={a: "nao"})
+        assert set(afetados) == {a, b}
+        fatos = list(s.scalars(select(CompanyFact).where(CompanyFact.atributo == "fabrica_ou_importa_seletivo")))
+        assert [(f.escopo, f.valor) for f in fatos] == [("empresa", "nao")]
+        assert s.get(Pendencia, p.id).status == "respondida"
+
+
+def test_reaplicar_usa_a_tese_do_proprio_item_e_respeita_a_pessoa(ambiente: dict[str, Any]) -> None:
+    from app.analise.aplicacao import reaplicar_item
+    from app.audits.processing import processar_itens
+    from app.db.session import TenantContext, sync_tenant_session
+    from app.models import AuditItem, TaxThesis
+    from app.review import service
+
+    org = ambiente["org_id"]
+    aid, (suco, sab) = ambiente["nova_auditoria"](
+        [("SUCO UVA INTEGRAL 1L", "20096100"), ("SABONETE BARRA", "34011190")]
+    )
+    processar_itens(aid, org, [suco, sab])
+    revisor = service.Revisor(user_id=uuid.uuid4(), email="contador@teste.com.br")
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        # Uma pessoa aprova o sabonete com outro cClassTrib: as regras não chegam lá, nada muda.
+        service.editar(
+            s, sab, revisor, cst="000", cclasstrib="000001", comentario="decisão do contador", aprovar_em_seguida=True
+        )
+        antes = (s.get(AuditItem, sab).final_cclasstrib, s.get(AuditItem, sab).status)
+        assert reaplicar_item(s, s.get(AuditItem, sab)) == "mantido"
+        assert (s.get(AuditItem, sab).final_cclasstrib, s.get(AuditItem, sab).status) == antes
+        # Parecer refeito ("Refazer pareceres"): o item precisa de reanálise, não de pergunta nova.
+        tese = s.get(TaxThesis, s.get(AuditItem, suco).thesis_id)
+        tese.status = "substituida"
+        s.flush()
+        assert reaplicar_item(s, s.get(AuditItem, suco)) == "reanalisar"

@@ -82,6 +82,77 @@ def codigo_erp_valido(state: ItemState) -> tuple[str, str] | None:
     return None
 
 
+def estado_do_registro(session: Any, item: AuditItem) -> ItemState:
+    """Reconstrói o estado do grafo a partir do que a análise gravou no item (respostas da IA, busca,
+    árvore). Serve para refazer a identidade e a avaliação com as regras atuais SEM chamar a IA."""
+    from app.analise.aplicacao import MOTIVOS_DA_AVALIACAO
+    from app.models import ApprovedMemory
+
+    idt = item.identidade or {}
+    est = dict(item.estrutura or {})
+    j = item.julgamento or None
+    esc = item.escalonamento or None
+    candidatos = [
+        {
+            "tipo_codigo": c.tipo_codigo,
+            "codigo": c.codigo,
+            "descricao_completa": c.descricao_completa,
+            "posicao": c.posicao,
+            "rank_semantico": c.rank_semantico,
+            "rank_textual": c.rank_textual,
+            "score": float(c.score or 0),
+            "codigo_atual": c.codigo_atual,
+        }
+        for c in session.scalars(
+            select(ItemCandidate).where(ItemCandidate.item_id == item.id).order_by(ItemCandidate.posicao)
+        )
+    ]
+    if idt.get("corrigido_pela_lei"):
+        for c in candidatos:
+            if c["codigo"] == idt.get("codigo"):
+                c["citado_na_lei"] = idt["corrigido_pela_lei"]
+    memoria = None
+    if item.origem == "memoria_aprovada" and item.memory_id:
+        m = session.get(ApprovedMemory, item.memory_id)
+        if m is not None:
+            memoria = {
+                "id": str(m.id),
+                "tipo_codigo": m.tipo_codigo,
+                "codigo": m.codigo,
+                "descricao_completa": idt.get("descricao_oficial"),
+            }
+    sem_ia = bool(idt.get("sem_ia"))
+    gatilhos = list(est.get("gatilhos_escalonamento") or [])
+    falha_tese = item.erro if (item.erro or "").startswith("A investigação jurídica falhou") else None
+    return ItemState(
+        item_id=str(item.id),
+        audit_id=str(item.audit_id),
+        org_id=str(item.org_id),
+        tentativa=item.tentativa,
+        descricao=item.descricao,
+        descricao_normalizada=item.descricao_normalizada or item.descricao,
+        tipo=item.tipo or "desconhecido",
+        estrutura=est,
+        motivos=[m for m in item.motivos or [] if m not in MOTIVOS_DA_AVALIACAO],
+        base_incompleta="BASE_REFERENCIA_INCOMPLETA" in (item.motivos or []),
+        memoria=memoria,
+        candidatos=candidatos,
+        confirmado_sem_ia=sem_ia,
+        posicao_confirmacao=next((c["posicao"] for c in candidatos if c["codigo_atual"]), 1) if sem_ia else None,
+        julgamento=j,
+        julgamento_valido=bool(j) and not (j or {}).get("_descartado"),
+        precisa_escalar=bool(gatilhos),
+        gatilhos_escalonamento=gatilhos,
+        escalonamento=esc,
+        escalonamento_valido=bool(esc) and not (esc or {}).get("_descartado"),
+        arvore=idt.get("arvore"),
+        tipo_codigo_final=idt.get("tipo_codigo") if (memoria or sem_ia) else None,
+        codigo_final=idt.get("codigo") if (memoria or sem_ia) else None,
+        tese_id=str(item.thesis_id) if item.thesis_id else None,
+        tese_falha=falha_tese,
+    )
+
+
 def identidade(state: ItemState) -> dict[str, Any]:
     tipo, codigo, _ = codigo_escolhido(state)
     return consolidar(
@@ -192,7 +263,7 @@ def investigar(state: ItemState, runtime: Rt) -> dict[str, Any]:
         )
         try:
             res = _executar(req, ctx)
-        except gateway.ChaveAPIAusente:
+        except (gateway.ChaveAPIAusente, gateway.IAIndisponivel):
             raise
         except gateway.FalhaIA as e:
             return {**saida, "tese_id": None, "tese_falha": f"A investigação jurídica falhou: {e}"}
@@ -329,7 +400,7 @@ def levantar_fatos(state: ItemState, runtime: Rt) -> dict[str, Any]:
     )
     try:
         res = _executar(req, ctx)
-    except gateway.ChaveAPIAusente:
+    except (gateway.ChaveAPIAusente, gateway.IAIndisponivel):
         raise
     except gateway.FalhaIA as e:  # sem os fatos, as perguntas simplesmente ficam abertas
         log.warning("levantar_fatos_falhou", erro=str(e))

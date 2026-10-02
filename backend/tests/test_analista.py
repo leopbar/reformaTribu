@@ -209,10 +209,11 @@ def test_imposto_seletivo_dependente_de_fato():
     )
     pend = avaliar(entrada(tese=t, correlacionados=[]))
     assert pend.is_situacao == "indefinido" and pend.status == "aguardando_informacao"
-    sujeito = avaliar(entrada({"adicao_acucar": fato("sim")}, tese=t, correlacionados=[]))
+    fabrica = {"adicao_acucar": fato("sim"), "fabrica_ou_importa_seletivo": fato("sim")}
+    sujeito = avaliar(entrada(fabrica, tese=t, correlacionados=[]))
     assert sujeito.is_situacao == "sujeito"
     assert sujeito.status == "revisao_contador"  # a organização exige conferência do IS
-    livre = avaliar(entrada({"adicao_acucar": fato("sim")}, tese=t, correlacionados=[], is_exige_analise=False))
+    livre = avaliar(entrada(fabrica, tese=t, correlacionados=[], is_exige_analise=False))
     assert livre.status == "classificado"
 
 
@@ -365,10 +366,21 @@ def test_duvida_que_nao_muda_o_imposto_nao_manda_ao_contador() -> None:
     assert "não muda o imposto" in ident.texto
 
 
-def test_duvida_que_muda_ou_nao_se_sabe_continua_com_o_contador() -> None:
-    for trat in ({"20096900": "000001|nao_sujeito"}, {"20096900": None}):
-        av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=DUVIDA, tratamento_alternativas=trat))
-        assert av.status == "revisao_contador"
+def test_duvida_que_muda_o_imposto_vira_pergunta_e_a_desconhecida_vai_ao_contador() -> None:
+    muda = {"20096900": "000001|nao_sujeito"}
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=DUVIDA, tratamento_alternativas=muda))
+    assert av.status == "aguardando_informacao" and av.nivel == "operacional"
+    p = next(p for p in av.perguntas if p.atributo == "codigo_do_item")
+    assert [o["valor"] for o in p.opcoes] == ["20096100", "20096900", "outro"]
+    assert "200034" in p.opcoes[0]["efeito"] and "000001" in p.opcoes[1]["efeito"]
+    assert p.grupo == "ident:20096100-20096900"
+    # Respondida com "nenhuma destas": o contador decide.
+    outro = {"adicao_acucar": fato("nao"), "codigo_do_item": fato("outro")}
+    av = avaliar(entrada(outro, identidade=DUVIDA, tratamento_alternativas=muda))
+    assert av.status == "revisao_contador"
+    # Tratamento desconhecido de alguma opção: continua com o contador.
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=DUVIDA, tratamento_alternativas={"20096900": None}))
+    assert av.status == "revisao_contador"
 
 
 # ------------------------------------------------------------ checagem cruzada com os anexos --
@@ -391,16 +403,234 @@ def test_produto_citado_na_lei_com_outro_codigo_vai_ao_contador() -> None:
     assert "3808.94.19" in cod.texto
 
 
-def test_duvida_imaterial_nao_aprova_ncm_criado_descricao_vaga_ou_certeza_baixa() -> None:
+def test_ncm_criado_com_imposto_igual_vai_para_ajuste_de_cadastro() -> None:
+    """ADR 0029: o IBS/CBS sai; o NCM novo é confirmado na lista "Ajustes de cadastro", sem travar o item."""
+    mesmo = {"20096900": "200034|nao_sujeito"}
+    idt = {**DUVIDA, "situacao": "sugerido", "codigo_erp": None}
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=idt, tratamento_alternativas=mesmo))
+    assert av.status == "classificado" and av.cclasstrib == "200034"
+    assert av.ajuste_cadastro["sugerido"] == "20096100" and av.ajuste_cadastro["erp"] is None
+    cod = next(d for d in av.dimensoes if d.chave == "codigo_fiscal")
+    assert "a confirmar no cadastro" in cod.texto
+
+
+def test_duvida_imaterial_com_descricao_vaga_ou_certeza_baixa_continua_com_o_contador() -> None:
     mesmo = {"20096900": "200034|nao_sujeito"}
     casos = [
-        {**DUVIDA, "situacao": "sugerido"},  # o ERP não tinha NCM: o sistema criou um
-        {**DUVIDA, "descricao_suficiente": False},  # a descrição não diz o que é o item
-        {**DUVIDA, "confianca_modelo": 0.64},  # certeza baixa
+        {**DUVIDA, "situacao": "sugerido", "codigo_erp": None, "descricao_suficiente": False},  # sem âncora
+        {**DUVIDA, "situacao": "sugerido", "codigo_erp": None, "confianca_modelo": 0.64},  # certeza baixa
     ]
     for idt in casos:
         av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=idt, tratamento_alternativas=mesmo))
         assert av.status == "revisao_contador", idt
-        ident = next(d for d in av.dimensoes if d.chave == "identificacao")
-        if ident.situacao == "atencao":  # com certeza baixa a identificação já é "falha"
-            assert "O imposto seria o mesmo" in ident.texto
+    # Com o NCM do ERP entre as opções (âncora), a descrição vaga não impede.
+    ancorado = {**DUVIDA, "descricao_suficiente": False, "codigo_erp": "20096100"}
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=ancorado, tratamento_alternativas=mesmo))
+    assert av.status == "classificado" and not av.ajuste_cadastro
+
+
+# ---------------------------------------------------- menos revisão humana (ADR 0029) --
+def test_erp_e_segundo_parecer_formam_dois_votos() -> None:
+    """O primeiro parecer errou (açúcar → "em bruto"); o segundo ficou com o NCM do ERP: confirmado."""
+    i = _consolidar(
+        estrutura={"codigo_atual": {"tipo": "ncm", "codigo": "17019900", "existe": True, "folha": True}},
+        julgamento={"codigo_sugerido": "17011400", "confianca": 0.95, "ncm_atual_coerente": False},
+        escalonamento={"codigo_sugerido": "17019900", "confianca": 0.95, "ncm_atual_coerente": True},
+        codigo_final="17019900",
+        candidatos=[
+            {"codigo": "17019900", "descricao_completa": "outros"},
+            {"codigo": "17011400", "descricao_completa": "em bruto"},
+        ],
+        motivos=[],
+    )
+    assert i["situacao"] == "confirmado" and i["dois_votos"] is True and i["concordancia"] is True
+    assert "17011400" not in i["codigos_em_disputa"]  # o primeiro parecer perdeu de dois a um
+    assert "NCM_INCOERENTE_COM_DESCRICAO" not in i["problemas_cadastro"]
+
+
+def test_codigo_mantido_com_marcacao_contraditoria_nao_vira_correcao_de_a_para_a() -> None:
+    """Café: o segundo parecer escolheu o NCM do ERP, mas marcou "não coerente". Antes: "corrigido de A para A"."""
+    i = _consolidar(
+        estrutura={"codigo_atual": {"tipo": "ncm", "codigo": "09012100", "existe": True, "folha": True}},
+        julgamento={"codigo_sugerido": "09019000", "confianca": 0.95, "ncm_atual_coerente": False},
+        escalonamento={"codigo_sugerido": "09012100", "confianca": 0.78, "ncm_atual_coerente": False},
+        codigo_final="09012100",
+        candidatos=[{"codigo": "09012100", "descricao_completa": "torrado"}],
+        motivos=[],
+    )
+    assert i["situacao"] == "confirmado"
+    assert i["codigo_erp"] == "09012100"
+
+
+def test_dois_votos_tornam_a_duvida_hipotetica_uma_observacao() -> None:
+    idt = {
+        **IDENTIDADE_OK,
+        "concordancia": False,
+        "segundo_parecer": True,
+        "dois_votos": True,
+        "confianca_modelo": 0.95,
+        "confianca_parecer": 0.95,
+        "sinais_de_duvida": ["Se for queijo fundido, seria 0406.30.00"],
+        "codigos_alternativos": ["04063000"],
+    }
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=idt, tratamento_alternativas={"04063000": None}))
+    assert av.status == "classificado"
+    assert "pontos observados" in next(d for d in av.dimensoes if d.chave == "identificacao").texto
+
+
+def test_duvida_sem_palavra_da_descricao_vira_observacao() -> None:
+    from app.analise.avaliacao import _separar_duvidas
+
+    duvidas = [
+        {"duvida": "zero indica edulcorante", "trecho": "ZERO"},
+        {"duvida": "se fosse descafeinado, seria outro código", "trecho": ""},
+        {"duvida": "pode ser fundido", "trecho": "FUNDIDO"},
+    ]
+    apoiadas, hipoteticas = _separar_duvidas(duvidas, "refrigerante cola zero 350ml")
+    assert apoiadas == ["zero indica edulcorante (“ZERO”)"]
+    assert hipoteticas == ["se fosse descafeinado, seria outro código", "pode ser fundido"]
+
+
+def test_codigo_novo_com_mesma_assinatura_juridica_nao_muda_o_imposto() -> None:
+    idt = {
+        **DUVIDA,
+        "situacao": "corrigido",
+        "concordancia": False,
+        "codigo_erp": "20096900",
+        "codigo_anterior": "20096900",
+    }
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=idt, tratamento_alternativas={"20096900": "="}))
+    assert av.status == "classificado"
+    assert av.ajuste_cadastro["erp"] == "20096900" and av.ajuste_cadastro["sugerido"] == "20096100"
+    # Sem comparar o código do ERP, nada se conclui.
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, identidade=idt, tratamento_alternativas={}))
+    assert av.status == "revisao_contador"
+
+
+IS_SUJEITO = {"situacao": "sujeito", "condicoes": [], "fundamentos": [], "explicacao": "Anexo XVII"}
+
+
+def test_imposto_seletivo_na_revenda_nao_vai_ao_contador() -> None:
+    t = tese([SUCO[1]], imposto_seletivo=IS_SUJEITO)
+    revenda = avaliar(entrada({"fabrica_ou_importa_seletivo": fato("nao")}, tese=t, correlacionados=[]))
+    assert revenda.status == "classificado" and revenda.is_situacao == "na_origem"
+    assert "SUJEITO_A_IMPOSTO_SELETIVO" not in revenda.motivos
+    assert "não incide na revenda" in revenda.conclusao
+    # Sem saber se a empresa fabrica ou importa: uma pergunta para a empresa toda, não uma revisão por item.
+    nao_sei = avaliar(entrada(tese=t, correlacionados=[]))
+    assert nao_sei.status == "aguardando_informacao"
+    p = next(p for p in nao_sei.perguntas if p.atributo == "fabrica_ou_importa_seletivo")
+    assert p.escopo == "empresa"
+    fabrica = avaliar(entrada({"fabrica_ou_importa_seletivo": fato("sim")}, tese=t, correlacionados=[]))
+    assert fabrica.status == "revisao_contador" and "SUJEITO_A_IMPOSTO_SELETIVO" in fabrica.motivos
+
+
+def test_decisao_de_pessoa_com_is_na_origem_conta_como_sujeito() -> None:
+    from app.analise.decisoes import resultado
+
+    assert resultado("000001", "na_origem") == resultado("000001", "sujeito") == "000001|sujeito"
+
+
+def _conflito_com_fato(**kw: Any) -> dict[str, Any]:
+    return {
+        "descricao": "A correlação do Anexo IX (ração) também cita o código.",
+        "refs": ["C1"],
+        "muda_resultado": True,
+        "cclasstrib_em_jogo": ["200034", "000001"],
+        "fato_que_decide": "destinado_a_racao",
+        "valor_para_o_outro_enquadramento": "sim",
+        **kw,
+    }
+
+
+def test_conflito_amarrado_a_um_fato_e_resolvido_pelo_fato() -> None:
+    t = tese(conflitos=[_conflito_com_fato()])
+    resolvido = avaliar(entrada({"adicao_acucar": fato("nao"), "destinado_a_racao": fato("nao")}, tese=t))
+    assert resolvido.status == "classificado"
+    assert "resolvido pelo fato" in next(d for d in resolvido.dimensoes if d.chave == "conflito").texto
+    pendente = avaliar(entrada({"adicao_acucar": fato("nao")}, tese=t))
+    assert pendente.status == "aguardando_informacao"
+    assert any(p.atributo == "destinado_a_racao" for p in pendente.perguntas)
+    outro = avaliar(entrada({"adicao_acucar": fato("nao"), "destinado_a_racao": fato("sim")}, tese=t))
+    assert outro.status == "revisao_especialista"
+    # Sem fato que decida (contradição da própria lei ou tabela): o especialista resolve.
+    sem = tese(conflitos=[_conflito_com_fato(fato_que_decide="")])
+    assert avaliar(entrada({"adicao_acucar": fato("nao")}, tese=sem)).status == "revisao_especialista"
+
+
+def test_cclasstrib_de_outro_cenario_nao_disputa_a_venda_ao_consumidor() -> None:
+    cct = {**CCT, "515001": {"codigo": "515001", "cst": "515", "nome": "Operações, sujeitas a diferimento"}}
+    c = {"descricao": "A correlação também cita 515001.", "refs": ["C1"], "cclasstrib_em_jogo": ["200034", "515001"]}
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, tese=tese(conflitos=[c]), cclasstrib=cct))
+    assert av.status == "classificado"
+
+
+def test_restricao_em_palavras_conferida_pelos_fatos_nao_trava() -> None:
+    alerta = {
+        "descricao": "A lei restringe o benefício em palavras, e a regra não tem condição: “sem adição de açúcar”",
+        "gravidade": "media",
+        "cclasstrib": "200034",
+        "codigos": [],
+    }
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, alertas=[alerta]))
+    assert av.status == "classificado"
+    sem_condicao = [dict(SUCO[0], condicoes=[]), SUCO[1]]
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, alertas=[alerta], tese=tese(sem_condicao)))
+    assert av.status == "revisao_contador"
+
+
+def test_servico_de_alimentacao_numa_empresa_sem_refeicoes_vai_ao_contador() -> None:
+    nbs = {
+        **IDENTIDADE_OK,
+        "tipo_codigo": "nbs",
+        "codigo": "103012200",
+        "codigo_formatado": "1.0301.22.00",
+        "situacao": "sugerido",
+        "codigo_erp": None,
+        "confianca_modelo": 0.9,
+    }
+    geral = tese([SUCO[1]])
+    av = avaliar(entrada({"fornece_refeicoes": fato("nao")}, identidade=nbs, tese=geral, tratamento_alternativas={}))
+    assert av.status == "revisao_contador"
+    assert "não serve refeições" in next(d for d in av.dimensoes if d.chave == "identificacao").texto
+    assert not av.ajuste_cadastro
+
+
+def test_falha_da_plataforma_nao_e_duvida_sobre_o_item() -> None:
+    from app.llm import gateway, provedores
+
+    assert gateway.plataforma_indisponivel(provedores.ErroTransitorio("HTTP 429: no credits remaining"))
+    assert gateway.plataforma_indisponivel(provedores.ErroDefinitivo("HTTP 400: credit balance is too low"))
+    assert not gateway.plataforma_indisponivel(provedores.ErroDefinitivo("HTTP 400: schema inválido"))
+    assert "créditos" in gateway._mensagem_falha(provedores.ErroTransitorio("You have no credits remaining"))
+
+
+def test_imposto_seletivo_so_para_codigos_do_anexo_xvii() -> None:
+    """O parecer disse "depende de açúcar" para 2202.99.00, mas o Anexo XVII só lista 2202.10.00."""
+    depende = {
+        "situacao": "depende",
+        "condicoes": [{"fato": "adicao_acucar", "valor_exigido": "sim", "explicacao": ""}],
+        "fundamentos": [],
+        "explicacao": "bebida açucarada",
+    }
+    t = tese([SUCO[1]], imposto_seletivo=depende)
+    fora = avaliar(entrada(tese=t, correlacionados=[], is_no_anexo_xvii=False))
+    assert fora.is_situacao == "nao_sujeito" and fora.status == "classificado"
+    assert not any(p.atributo == "adicao_acucar" for p in fora.perguntas)  # nada a perguntar
+    assert "Anexo XVII" in next(d for d in fora.dimensoes if d.chave == "imposto_seletivo").texto
+    # Citado no anexo (ou sem como saber): vale o parecer.
+    for citado in (True, None):
+        av = avaliar(entrada(tese=t, correlacionados=[], is_no_anexo_xvii=citado))
+        assert av.is_situacao == "indefinido"
+
+
+def test_tipo_do_erp_em_texto_livre() -> None:
+    from app.ingest.cleaning import tipo_do_erp
+
+    assert tipo_do_erp("Produção interna") == "produto"
+    assert tipo_do_erp("Revenda de bebida industrializada") == "produto"
+    assert tipo_do_erp("Medicamento sob prescrição") == "produto"
+    assert tipo_do_erp("S") == "servico" and tipo_do_erp("P") == "produto"
+    assert tipo_do_erp("Prestação de serviço de entrega") == "servico"
+    assert tipo_do_erp("Venda de alimentação preparada") is None  # restaurante: pode ser serviço
+    assert tipo_do_erp("Múltiplos") is None and tipo_do_erp(None) is None

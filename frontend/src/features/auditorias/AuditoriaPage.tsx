@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
-import { ArrowLeft, Download, Keyboard, Loader2, PauseCircle, Play, Radio } from "lucide-react";
+import { ArrowLeft, Download, Keyboard, Loader2, PauseCircle, Play, Radio, RefreshCcw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api, ok, tokenValido } from "@/api/client";
@@ -11,9 +11,10 @@ import { assinarSSE } from "@/lib/sse";
 import { fmtData, fmtNum, fmtUSD, plural } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { ETAPAS, ROTULO_STATUS_AUDITORIA, useAuditoria, type Auditoria } from "./comum";
+import { AjustesCadastroPainel } from "./AjustesCadastroPainel";
 import { Passos } from "./NovaAuditoriaPage";
 import { FamiliasPainel } from "./FamiliasPainel";
-import { FluxoAuditoria } from "./FluxoAgentes";
+import { FluxoAuditoria } from "./FluxoDiagrama";
 import { PerguntasPainel } from "./PerguntasPainel";
 import { Resultado } from "./Resultado";
 
@@ -76,7 +77,7 @@ export function AuditoriaPage() {
       </>
     );
   }
-  if (["pronta", "pausada_orcamento", "falhou", "rascunho"].includes(d.status) && !(d.contadores as { concluidos?: number })?.concluidos) {
+  if (["pronta", "pausada_orcamento", "pausada_ia", "falhou", "rascunho"].includes(d.status) && !(d.contadores as { concluidos?: number })?.concluidos) {
     return (
       <>
         <Cabecalho voltar={voltar} titulo={d.nome} subtitulo={subtitulo} />
@@ -93,7 +94,8 @@ export function AuditoriaPage() {
         subtitulo={subtitulo}
         acoes={
           <>
-            {d.status === "pausada_orcamento" ? <Retomar auditoria={d} /> : null}
+            {d.status === "pausada_orcamento" || d.status === "pausada_ia" ? <Retomar auditoria={d} /> : null}
+            {d.status === "concluida" ? <Reaplicar auditoria={d} /> : null}
             <Button asChild variant="secundario">
               <Link to="/auditorias/$id/revisar" params={{ id }}>
                 <Keyboard /> Fila de revisão
@@ -113,6 +115,12 @@ export function AuditoriaPage() {
           {d.erro} Os itens já analisados continuam disponíveis para revisão.
         </Aviso>
       ) : null}
+      {d.status === "pausada_ia" ? (
+        <Aviso tom="atencao" titulo="Auditoria pausada: a plataforma de IA não respondeu" className="mb-4">
+          {d.erro} Nenhum item foi mandado para revisão por isso: a análise continua sozinha quando a plataforma voltar. Se
+          preferir, troque o modelo em Modelos de IA e clique em Retomar.
+        </Aviso>
+      ) : null}
       <Abas auditoria={d} />
     </>
   );
@@ -120,7 +128,7 @@ export function AuditoriaPage() {
 
 /** Itens, perguntas decisivas e famílias investigadas: o trabalho do analista em três visões. */
 function Abas({ auditoria }: { auditoria: Auditoria }) {
-  const c = auditoria.contadores as { perguntas_abertas?: number; itens_em_perguntas?: number; familias?: number };
+  const c = auditoria.contadores as { perguntas_abertas?: number; itens_em_perguntas?: number; familias?: number; ajustes_cadastro?: number };
   const [aba, setAba] = useState(() => {
     try {
       return sessionStorage.getItem(`aba:${auditoria.id}`) ?? "itens";
@@ -146,6 +154,10 @@ function Abas({ auditoria }: { auditoria: Auditoria }) {
             <span className="num ml-1.5 rounded-full bg-ocre px-1.5 text-2xs font-semibold text-white">{fmtNum(c.perguntas_abertas)}</span>
           ) : null}
         </TabsTrigger>
+        <TabsTrigger value="cadastro">
+          Ajustes de cadastro
+          {c.ajustes_cadastro ? <span className="num ml-1.5 rounded-full bg-caneta px-1.5 text-2xs font-semibold text-white">{fmtNum(c.ajustes_cadastro)}</span> : null}
+        </TabsTrigger>
         <TabsTrigger value="familias">
           Famílias investigadas {c.familias ? <span className="num text-tinta-3">({fmtNum(c.familias)})</span> : null}
         </TabsTrigger>
@@ -164,6 +176,9 @@ function Abas({ auditoria }: { auditoria: Auditoria }) {
       </TabsContent>
       <TabsContent value="perguntas">
         <PerguntasPainel auditId={auditoria.id} />
+      </TabsContent>
+      <TabsContent value="cadastro">
+        <AjustesCadastroPainel auditId={auditoria.id} />
       </TabsContent>
       <TabsContent value="familias">
         <FamiliasPainel auditId={auditoria.id} />
@@ -188,6 +203,29 @@ function Retomar({ auditoria }: { auditoria: Auditoria }) {
   return (
     <Button variant="primario" onClick={() => m.mutate()} disabled={m.isPending}>
       <Play /> Retomar
+    </Button>
+  );
+}
+
+/** Refaz a decisão dos itens com as regras atuais, a partir das respostas da IA já gravadas: sem IA e sem custo. */
+function Reaplicar({ auditoria }: { auditoria: Auditoria }) {
+  const qc = useQueryClient();
+  const m = useMutation({
+    mutationFn: (reanalisar_falhas: boolean) =>
+      ok(api.POST("/api/auditorias/{audit_id}/reaplicar", { params: { path: { audit_id: auditoria.id } }, body: { reanalisar_falhas } })),
+    onSuccess: (r, reanalisar) => {
+      const acao =
+        r.falhas_de_ia && !reanalisar
+          ? { action: { label: `Reanalisar os ${fmtNum(r.falhas_de_ia)}`, onClick: () => m.mutate(true) }, duration: 15000 }
+          : undefined;
+      toast.success(r.mensagem, acao);
+      for (const k of ["auditoria", "itens", "pendencias", "grupos-revisao", "ajustes-cadastro"]) void qc.invalidateQueries({ queryKey: [k, auditoria.id] });
+    },
+    onError: (e) => toast.error(mensagemErro(e)),
+  });
+  return (
+    <Button variant="secundario" onClick={() => m.mutate(false)} disabled={m.isPending} title="Refaz a decisão dos itens com as regras atuais, sem chamar a IA e sem custo">
+      <RefreshCcw /> {m.isPending ? "Reaplicando…" : "Reaplicar regras (sem IA)"}
     </Button>
   );
 }
