@@ -15,7 +15,7 @@ from sqlalchemy import or_, select
 from app.core.codes import formatar_codigo
 from app.db.session import sync_tenant_session
 from app.embeddings import client as embeddings
-from app.ingest.cleaning import hash_descricao
+from app.ingest.cleaning import hash_descricao, tipo_do_erp
 from app.llm import gateway
 from app.llm.prompts import carregar
 from app.llm.schemas import (
@@ -65,7 +65,10 @@ def normalizar(state: ItemState, runtime: Rt) -> dict[str, Any]:
     with sync_tenant_session(ctx.tenant) as s:
         item = s.get(AuditItem, uuid.UUID(state.item_id))
         assert item is not None
-        descricao, tipo_inf, ncm, nbs, marca = item.descricao, item.tipo, item.ncm, item.nbs, item.marca
+        descricao, ncm, nbs, marca = item.descricao, item.ncm, item.nbs, item.marca
+        # O campo "tipo" do ERP manda; numa reanálise, `item.tipo` pode trazer o "desconhecido" da análise
+        # anterior, e itens lidos antes da ADR 0029 só reconheciam "P", "S", "produto"…
+        tipo_inf = tipo_do_erp(item.tipo_informado) or (item.tipo if item.tipo in ("produto", "servico") else None)
     normalizada, expansoes = normalizar_descricao(remover_marca(descricao, marca), ctx.abreviacoes)
     desconhecidos = tokens_desconhecidos(normalizada)
     if ctx.usar_modelo_leve and ctx.modo == "tempo_real" and len(desconhecidos) >= 2:
@@ -338,17 +341,111 @@ def recuperar_candidatos(state: ItemState, runtime: Rt) -> dict[str, Any]:
                                 "citado_na_lei": nota,
                             }
                         )
+        # Itens parecidos que pessoas já decidiram nesta organização (ADR 0029): os códigos deles entram
+        # na prova e, se concordam com o NCM do ERP, confirmam o código sem IA.
+        vizinhos = parecidos_aprovados(s, state.descricao_normalizada, embedding) if embedding is not None else []
+        for viz in vizinhos:
+            nota = f"aprovado por pessoa para “{viz['descricao']}” (semelhança {viz['similaridade']:.2f})"
+            existente = next((c for c in lista if c["codigo"] == viz["codigo"]), None)
+            if existente is not None:
+                existente.setdefault("aprovado_para_parecido", nota)
+                continue
+            if viz["similaridade"] < SIMILARIDADE_PROVA:
+                continue
+            versao_v = ctx.versao(viz["tipo_codigo"])
+            no = obter_no(s, viz["tipo_codigo"], versao_v, viz["codigo"]) if versao_v else None
+            if no is not None and no["folha"]:
+                lista.append(
+                    {
+                        "tipo_codigo": viz["tipo_codigo"],
+                        "codigo": viz["codigo"],
+                        "descricao_completa": no["descricao_completa"],
+                        "rank_semantico": None,
+                        "rank_textual": None,
+                        "score": 0.0,
+                        "posicao": None,
+                        "codigo_atual": False,
+                        "aprovado_para_parecido": nota,
+                    }
+                )
     for c in lista:
         c.setdefault("codigo_atual", c["codigo"] in (atual.get("codigo"), atual.get("provavel")))
     info["semantica"] = embedding is not None
+    info["parecidos_aprovados"] = vizinhos
     motivos = list(state.motivos)
     if not lista:
         motivos = _add(motivos, Motivo.NENHUM_CANDIDATO_ADEQUADO)
     saida: dict[str, Any] = {"candidatos": lista, "busca": info, "motivos": motivos}
-    confirmado = _confirmacao_sem_ia(state, atual, lista)
+    confirmado = _confirmacao_sem_ia(state, atual, lista) or _confirmacao_por_parecidos(state, atual, lista, vizinhos)
     if confirmado is not None:
         saida.update(confirmado)
+        if confirmado.get("posicao_confirmacao") == 0:
+            saida["estrutura"] = {**(state.estrutura or {}), "confirmado_por_parecidos": vizinhos[:3]}
     return saida
+
+
+# Semelhança (cosseno) entre descrições: confirma o NCM do ERP / um código diferente impede a confirmação /
+# o código do vizinho entra na prova. Medidos com o modelo de embeddings local: produtos do mesmo NCM ficam
+# em 0,95–0,98; vizinhos de NCM diferente (leite UHT × leite em pó, mussarela × prato) em 0,91–0,93.
+SIMILARIDADE_CONFIRMA = 0.95
+SIMILARIDADE_CONFLITA = 0.93
+SIMILARIDADE_PROVA = 0.90
+
+
+def parecidos_aprovados(s: Any, descricao: str, embedding: list[float], limite: int = 5) -> list[dict[str, Any]]:
+    """Itens que pessoas decidiram na organização (memória aprovada), do mais parecido ao menos parecido.
+
+    Calcula antes os vetores que faltam (a memória cresce a cada aprovação; poucos por vez)."""
+    faltando = list(
+        s.scalars(
+            select(ApprovedMemory)
+            .where(ApprovedMemory.ativo.is_(True), ApprovedMemory.embedding.is_(None))
+            .order_by(ApprovedMemory.created_at.desc())
+            .limit(64)
+        )
+    )
+    if faltando:
+        try:
+            vetores = embeddings.embed([m.descricao_normalizada for m in faltando])
+        except embeddings.EmbeddingsIndisponivel:
+            vetores = []
+        for m, v in zip(faltando, vetores, strict=False):
+            m.embedding = v
+        s.flush()
+    distancia = ApprovedMemory.embedding.cosine_distance(embedding)
+    rows = s.execute(
+        select(ApprovedMemory.descricao_normalizada, ApprovedMemory.tipo_codigo, ApprovedMemory.codigo, distancia)
+        .where(ApprovedMemory.ativo.is_(True), ApprovedMemory.embedding.is_not(None))
+        .order_by(distancia)
+        .limit(limite)
+    ).all()
+    return [
+        {"descricao": d, "tipo_codigo": t, "codigo": c, "similaridade": round(1 - float(dist), 4)}
+        for d, t, c, dist in rows
+        if 1 - float(dist) >= SIMILARIDADE_PROVA
+    ]
+
+
+def _confirmacao_por_parecidos(
+    state: ItemState, atual: dict[str, Any], lista: list[dict[str, Any]], vizinhos: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """O NCM do ERP é o mesmo que uma pessoa aprovou para um item quase igual, e nenhum item parecido foi
+    decidido com outro código: dois votos independentes da IA (o cadastro e a pessoa). Confirma sem IA."""
+    cod = atual.get("codigo")
+    if not cod or not (atual.get("existe") and atual.get("folha") and atual.get("vigente", True)):
+        return None
+    if (state.estrutura or {}).get("descricao_curta") or any(x.get("citado_na_lei") for x in lista):
+        return None
+    iguais = [v for v in vizinhos if v["codigo"] == cod and v["similaridade"] >= SIMILARIDADE_CONFIRMA]
+    contra = [v for v in vizinhos if v["codigo"] != cod and v["similaridade"] >= SIMILARIDADE_CONFLITA]
+    if not iguais or contra:
+        return None
+    return {
+        "confirmado_sem_ia": True,
+        "tipo_codigo_final": atual.get("tipo") or "ncm",
+        "codigo_final": cod,
+        "posicao_confirmacao": 0,  # 0 = confirmado por itens parecidos aprovados por pessoas
+    }
 
 
 def _confirmacao_sem_ia(state: ItemState, atual: dict[str, Any], lista: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -433,6 +530,7 @@ def _conteudo(state: ItemState, ctx: Contexto) -> dict[str, Any]:
                 "codigo_formatado": formatar_codigo(c["tipo_codigo"], c["codigo"]),
                 "descricao_oficial": c["descricao_completa"],
                 **({"citado_na_lei": c["citado_na_lei"]} if c.get("citado_na_lei") else {}),
+                **({"aprovado_para_parecido": c["aprovado_para_parecido"]} if c.get("aprovado_para_parecido") else {}),
             }
             for c in state.candidatos
         ],
@@ -494,7 +592,7 @@ def julgar_coerencia(state: ItemState, runtime: Rt) -> dict[str, Any]:
     motivos = list(state.motivos)
     try:
         res = _executar(req, ctx)
-    except gateway.ChaveAPIAusente:
+    except (gateway.ChaveAPIAusente, gateway.IAIndisponivel):
         raise
     except gateway.FalhaIA as e:
         return {"falha_ia": str(e), "julgamento_valido": False, "motivos": _add(motivos, Motivo.FALHA_NA_ANALISE_IA)}
@@ -560,7 +658,7 @@ def escalar(state: ItemState, runtime: Rt) -> dict[str, Any]:
     motivos = list(state.motivos)
     try:
         res = _executar(req, ctx)
-    except gateway.ChaveAPIAusente:
+    except (gateway.ChaveAPIAusente, gateway.IAIndisponivel):
         raise
     except gateway.FalhaIA as e:
         return {"falha_ia": str(e), "escalonamento_valido": False, "motivos": _add(motivos, Motivo.FALHA_NA_ANALISE_IA)}

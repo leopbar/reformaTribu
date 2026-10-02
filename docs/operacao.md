@@ -59,11 +59,15 @@ volumes persistentes são `pgdata`, `storage`, `redisdata` e `embeddings_cache` 
 - Flower (`/flower`) para filas e tarefas.
 - Custos de IA por chamada, item, auditoria e organização em `llm_calls`; orçamento mensal com alerta
   (notificação) e bloqueio (auditoria pausada).
+- Falha da plataforma de IA (sem créditos, fora do ar): a auditoria fica `pausada_ia`, com notificação, e a
+  tarefa `auditoria.retomar_pausadas_ia` (a cada 5 min) a retoma quando a espera vence (10, 20, 40, 80 e
+  120 min). Nenhum item vai para revisão por falha da plataforma (ADR 0029).
 - Logs JSON prontos para agregadores (Loki, CloudWatch, Datadog).
 
 ## Atualizações de modelo
 
 Os modelos são configuráveis por variável de ambiente e por organização. Antes de trocar o padrão,
 rode `make eval` com as duas configurações e compare a taxa de falsos confirmados
-([evals/README.md](../evals/README.md)). Preços em `backend/app/llm/pricing.py` (conferidos em
+([evals/README.md](../evals/README.md)). Antes de mudar uma regra de decisão, rode a medição sem IA
+(`docker compose exec api python -m app.evals.replay`): ela não pode criar nenhum falso automático. Preços em `backend/app/llm/pricing.py` (conferidos em
 26/09/2026 — revise ao trocar de modelo).

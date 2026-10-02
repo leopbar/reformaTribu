@@ -76,6 +76,45 @@ def reavaliar_itens(org_id: str, item_ids: list[str], motivo: str) -> int:
     return n
 
 
+@celery_app.task(name="analise.reaplicar_auditoria")
+def reaplicar_auditoria(audit_id: str, org_id: str, reanalisar_falhas: bool = False) -> int:
+    """Reaplica as regras atuais aos itens de uma auditoria grande, sem IA (ADR 0029)."""
+    from app.analise.aplicacao import reaplicar_item
+    from app.evals.replay import falha_de_infraestrutura
+    from app.models import AuditItem
+
+    ctx = TenantContext.sistema(uuid.UUID(org_id))
+    with sync_tenant_session(ctx) as s:
+        ids = list(s.scalars(select(AuditItem.id).where(AuditItem.audit_id == uuid.UUID(audit_id))))
+    n = 0
+    falhas: list[uuid.UUID] = []
+    for i in range(0, len(ids), 200):
+        with sync_tenant_session(ctx) as s:
+            for item in s.scalars(select(AuditItem).where(AuditItem.id.in_(ids[i : i + 200]))):
+                if falha_de_infraestrutura(s, item) and item.revisao_status != "aprovado":
+                    falhas.append(item.id)
+                    continue
+                r = reaplicar_item(s, item)
+                if r == "reaplicado":
+                    n += 1
+                elif r == "reanalisar":
+                    falhas.append(item.id)
+    if reanalisar_falhas and falhas:
+        from app.models import Audit
+
+        with sync_tenant_session(ctx) as s:
+            for item in s.scalars(select(AuditItem).where(AuditItem.id.in_(falhas))):
+                item.tentativa += 1
+                item.status, item.etapa, item.motivos, item.perguntas = "pendente", None, [], []
+                item.aprovado_automaticamente = False
+            a = s.get(Audit, uuid.UUID(audit_id))
+            if a is not None:
+                a.status, a.modo = "processando", "tempo_real"
+        processing.enfileirar_itens(uuid.UUID(audit_id), uuid.UUID(org_id), falhas)
+    processing.atualizar_contadores(uuid.UUID(audit_id), uuid.UUID(org_id))
+    return n
+
+
 @celery_app.task(name="analise.atualizar_contadores")
 def atualizar_contadores(audit_id: str, org_id: str) -> None:
     processing.atualizar_contadores(uuid.UUID(audit_id), uuid.UUID(org_id))
@@ -84,6 +123,12 @@ def atualizar_contadores(audit_id: str, org_id: str) -> None:
 @celery_app.task(name="auditoria.recuperar_travados")
 def recuperar_travados() -> int:
     return sum(processing.recuperar_travados(o) for o in _orgs("sys_orgs_com_trabalho"))
+
+
+@celery_app.task(name="auditoria.retomar_pausadas_ia")
+def retomar_pausadas_ia() -> int:
+    """Retoma as auditorias pausadas porque a plataforma de IA não respondeu (ADR 0029)."""
+    return sum(processing.retomar_pausadas_por_ia(o) for o in _orgs("sys_orgs_com_trabalho"))
 
 
 # ------------------------------------------------------------------------------ Batch API --

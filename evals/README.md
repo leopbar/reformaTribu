@@ -1,5 +1,23 @@
 # Harness de avaliação
 
+## Medição sem IA (ADR 0029)
+
+Antes de mudar uma regra de decisão, meça sem custo quantos itens iriam para uma pessoa e se algum sairia
+classificado sozinho com resultado diferente do que uma pessoa decidiu:
+
+```bash
+docker compose exec api python -m app.evals.replay --saida /evals/reports
+docker compose exec api python -m app.evals.replay --gabarito /evals/conjunto_ouro/decisoes_humanas.local.csv
+```
+
+A medição refaz a identidade e a avaliação dos itens já analisados a partir das respostas da IA gravadas,
+com o código atual, e não grava nada. O relatório lista os itens que mudam e os que ainda vão para uma
+pessoa. **Falsos automáticos** tem de ficar em zero (o comando termina com código 1 se não ficar). O
+gabarito exportado tem as decisões de pessoas no formato abaixo; o arquivo `*.local.csv` fica fora do Git
+porque traz itens reais.
+
+## Harness com a IA (gera custo)
+
 Mede a qualidade do pipeline **real** (API do Claude, busca híbrida e motor de regras sobre a base de
 referência vigente) num conjunto-ouro, e compara configurações de modelos e versões de prompt.
 

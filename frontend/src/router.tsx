@@ -16,7 +16,7 @@ import { AtividadesPage, ContaPage, PlataformaPage } from "@/features/outros/Out
 import { PainelPage } from "@/features/painel/PainelPage";
 import { ChavesApiPage } from "@/features/ia/ChavesApiPage";
 import { ModelosPage } from "@/features/ia/ModelosPage";
-import { BaseReferenciaPage, RegraRevisaoPage, RegrasPage } from "@/features/referencia/ReferenciaPages";
+import { BaseReferenciaPage, RegraRevisaoPage, RegrasDetalhesPage, RegrasPage } from "@/features/referencia/ReferenciaPages";
 
 interface Contexto {
   queryClient: QueryClient;
@@ -80,6 +80,7 @@ const atividades = createRoute({ getParentRoute: () => app, path: "/atividades",
 const conta = createRoute({ getParentRoute: () => app, path: "/conta", component: ContaPage });
 const referencia = createRoute({ getParentRoute: () => app, path: "/referencia", component: BaseReferenciaPage });
 const regras = createRoute({ getParentRoute: () => app, path: "/referencia/regras", component: RegrasPage });
+const regrasDetalhes = createRoute({ getParentRoute: () => app, path: "/referencia/regras/detalhes", component: RegrasDetalhesPage });
 const regra = createRoute({ getParentRoute: () => app, path: "/referencia/regras/$id", component: RegraRevisaoPage });
 const iaModelos = createRoute({ getParentRoute: () => app, path: "/ia/modelos", component: ModelosPage });
 const iaChaves = createRoute({ getParentRoute: () => app, path: "/ia/chaves", component: ChavesApiPage });
@@ -87,7 +88,7 @@ const plataforma = createRoute({ getParentRoute: () => app, path: "/plataforma",
 
 const arvore = raiz.addChildren([
   entrar,
-  app.addChildren([painel, empresas, empresa, auditorias, nova, auditoria, revisar, exportar, configuracoes, atividades, conta, referencia, regras, regra, plataforma, iaModelos, iaChaves]),
+  app.addChildren([painel, empresas, empresa, auditorias, nova, auditoria, revisar, exportar, configuracoes, atividades, conta, referencia, regras, regrasDetalhes, regra, plataforma, iaModelos, iaChaves]),
 ]);
 
 export function criarRouter(queryClient: QueryClient) {

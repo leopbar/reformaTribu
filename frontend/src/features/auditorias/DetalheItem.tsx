@@ -22,7 +22,12 @@ const ACOES_HIST: Record<string, string> = {
   desfazer: "Desfez a decisão",
 };
 
-const IS: Record<string, string> = { sujeito: "Sujeito", nao_sujeito: "Não sujeito", indefinido: "A confirmar" };
+const IS: Record<string, string> = {
+  sujeito: "Sujeito",
+  na_origem: "Na origem (cobrado na fabricação/importação; não recolhe na revenda)",
+  nao_sujeito: "Não sujeito",
+  indefinido: "A confirmar",
+};
 const HIPOTESE_SITUACAO: Record<string, { rotulo: string; cor: string }> = {
   escolhida: { rotulo: "aplicada", cor: "text-conferido" },
   afastada: { rotulo: "afastada", cor: "text-tinta-3" },
@@ -47,10 +52,19 @@ export function useAcoesItem(itemId: string | null, auditId: string, aoConcluir?
     qc.setQueryData(["itens", auditId], (l: LinhaItem[] | undefined) => l?.map((i) => (i.id === itemId ? { ...i, ...novo } : i)));
   };
   const opcoes = (acao: string, msg: string) => ({
-    onSuccess: (r: { mensagem?: string; status?: string; revisao_status?: string }) => {
+    onSuccess: (r: { mensagem?: string; status?: string; revisao_status?: string; lote_id?: string | null; iguais?: number }) => {
       aplicarStatus(r);
       atualizar();
-      toast.success(r?.mensagem ?? msg, acao === "aprovar" ? { action: { label: "Desfazer", onClick: () => desfazer.mutate() } } : undefined);
+      // A mesma decisão pode ter valido para itens iguais (ADR 0029): "Desfazer" desfaz todos.
+      const desfazerTudo = () => {
+        desfazer.mutate();
+        if (r.lote_id) desfazerLote.mutate(r.lote_id);
+      };
+      toast.success(r?.mensagem ?? msg, acao === "aprovar" ? { action: { label: r.iguais ? "Desfazer todos" : "Desfazer", onClick: desfazerTudo }, duration: r.iguais ? 12000 : undefined } : undefined);
+      if (r.iguais) {
+        void qc.invalidateQueries({ queryKey: ["grupos-revisao", auditId] });
+        void qc.invalidateQueries({ queryKey: ["ajustes-cadastro", auditId] });
+      }
       aoConcluir?.(acao);
     },
     onError: (e: unknown) => toast.error(mensagemErro(e)),
@@ -69,6 +83,12 @@ export function useAcoesItem(itemId: string | null, auditId: string, aoConcluir?
       atualizar();
       toast.success("Decisão desfeita");
     },
+    onError: (e: unknown) => toast.error(mensagemErro(e)),
+  });
+  const desfazerLote = useMutation({
+    mutationFn: (loteId: string) =>
+      ok(api.POST("/api/auditorias/{audit_id}/lotes/{lote_id}/desfazer", { params: { path: { audit_id: auditId, lote_id: loteId } } })),
+    onSuccess: () => atualizar(),
     onError: (e: unknown) => toast.error(mensagemErro(e)),
   });
   const editar = useMutation({
@@ -295,8 +315,16 @@ export function DetalheItem({
                 {pode("responder") && !aprovadoHumano ? (
                   <span className="mt-1.5 flex flex-wrap gap-1 pl-5.5">
                     {p.opcoes.map((o) => (
-                      <Button key={o.valor} tamanho="sm" disabled={bloqueado || responder.isPending} onClick={() => responder.mutate({ id: p.pendencia_id, respostas_itens: { [itemId]: o.valor } })}>
-                        {o.rotulo ?? o.valor} <span className="text-tinta-3">(só este item)</span>
+                      <Button
+                        key={o.valor}
+                        tamanho="sm"
+                        disabled={bloqueado || responder.isPending}
+                        onClick={() =>
+                          // Pergunta sobre a empresa (dossiê): a resposta vale para todos os itens dela.
+                          responder.mutate(p.escopo === "empresa" ? { id: p.pendencia_id, valor: o.valor } : { id: p.pendencia_id, respostas_itens: { [itemId]: o.valor } })
+                        }
+                      >
+                        {o.rotulo ?? o.valor} <span className="text-tinta-3">{p.escopo === "empresa" ? "(vale para a empresa)" : "(só este item)"}</span>
                       </Button>
                     ))}
                   </span>

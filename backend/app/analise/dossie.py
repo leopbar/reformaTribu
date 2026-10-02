@@ -78,6 +78,13 @@ PERGUNTAS: tuple[PerguntaDossie, ...] = (
         segmentos=("farmacia",),
     ),
     PerguntaDossie(
+        "fabrica_ou_importa_seletivo",
+        "A empresa fabrica ou importa algum produto sujeito ao Imposto Seletivo (bebidas alcoólicas, bebidas "
+        "açucaradas, cigarros, veículos, embarcações, armas)?",
+        "O Imposto Seletivo é cobrado uma única vez, na fabricação ou na importação (LC 214/2025, arts. 409 e 412). "
+        "Quem só revende não recolhe: os itens sujeitos ao IS deixam de ir para o contador.",
+    ),
+    PerguntaDossie(
         "zona_franca",
         "O estabelecimento fica na Zona Franca de Manaus ou em área de livre comércio?",
         "Há regimes diferenciados para essas regiões.",

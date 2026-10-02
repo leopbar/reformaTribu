@@ -328,7 +328,7 @@ function PaletaComandos({ aberta, aoFechar }: { aberta: boolean; aoFechar: () =>
             <Item aoSelecionar={() => ir("/auditorias")}>Ver auditorias</Item>
             <Item aoSelecionar={() => ir("/empresas")}>Ver empresas</Item>
             {pode("gerenciar_configuracoes") ? <Item aoSelecionar={() => ir("/configuracoes")}>Configurações</Item> : null}
-            {sessao?.superadmin ? <Item aoSelecionar={() => ir("/referencia/regras")}>Revisar regras legais</Item> : null}
+            {sessao?.superadmin ? <Item aoSelecionar={() => ir("/referencia/regras")}>Regras legais (resumo)</Item> : null}
           </Command.Group>
           <Command.Group heading="Auditorias">
             {(auditorias.data ?? []).map((a) => (

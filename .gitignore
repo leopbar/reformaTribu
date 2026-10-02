@@ -24,3 +24,5 @@ credenciais-dev.local.txt
 
 # Documentos só locais (acompanhamento do projeto)
 *.local.md
+# Gabarito com decisões de pessoas sobre itens reais (medição sem IA, ADR 0029)
+*.local.csv

@@ -33,6 +33,7 @@ celery_app.conf.update(
     beat_schedule={
         "coletar-lotes": {"task": "llm.coletar_lotes", "schedule": float(_s.llm_batch_poll_s)},
         "recuperar-travados": {"task": "auditoria.recuperar_travados", "schedule": 300.0},
+        "retomar-pausadas-ia": {"task": "auditoria.retomar_pausadas_ia", "schedule": 300.0},
         "expurgar-arquivos": {"task": "manutencao.expurgar_arquivos", "schedule": crontab(hour=3, minute=15)},
         "verificar-fontes": {"task": "referencia.verificar_atualizacoes", "schedule": crontab(hour=4, minute=30)},
         "indexar-embeddings": {"task": "referencia.indexar_pendentes", "schedule": 600.0},

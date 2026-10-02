@@ -7,6 +7,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -113,6 +114,7 @@ class AuditItem(Base):
         Index("ix_audit_items_audit_status", "audit_id", "status"),
         Index("ix_audit_items_audit_linha", "audit_id", "linha"),
         Index("ix_audit_items_audit_revisao", "audit_id", "revisao_status"),
+        Index("ix_audit_items_audit_ajuste", "audit_id", "ajuste_cadastro_status"),
     )
 
     id: Mapped[uuid.UUID] = uuid_pk()
@@ -189,6 +191,11 @@ class AuditItem(Base):
     is_situacao: Mapped[str | None] = mapped_column(String(20))
     perfil_versao: Mapped[int] = mapped_column(Integer, default=0)
 
+    # NCM/NBS a confirmar no cadastro quando a dúvida não muda o imposto (ADR 0029): a classificação do
+    # IBS/CBS sai; o código vai para a lista "Ajustes de cadastro" (pendente | aceito | mantido).
+    ajuste_cadastro: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    ajuste_cadastro_status: Mapped[str | None] = mapped_column(String(20))
+
     # Revisão humana
     revisao_status: Mapped[str] = mapped_column(String(20), default="pendente")
     final_tipo_codigo: Mapped[str | None] = mapped_column(String(3))
@@ -264,6 +271,8 @@ class ApprovedMemory(Base):
     snapshot_id: Mapped[uuid.UUID | None]
     aprovado_por: Mapped[uuid.UUID | None]
     ativo: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Vetor da descrição (ADR 0029): acha itens parecidos já decididos por pessoas.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(), nullable=True)
     created_at: Mapped[datetime] = created_at()
 
 

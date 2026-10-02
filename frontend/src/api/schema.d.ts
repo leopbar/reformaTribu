@@ -545,7 +545,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Aprovar */
+        /**
+         * Aprovar
+         * @description Aprova o item e, na mesma auditoria, os itens pendentes que pedem a mesma decisão (ADR 0029).
+         */
         post: operations["aprovar_api_itens__item_id__aprovar_post"];
         delete?: never;
         options?: never;
@@ -654,6 +657,71 @@ export interface paths {
         put?: never;
         /** Aprovar Lote */
         post: operations["aprovar_lote_api_auditorias__audit_id__aprovar_lote_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auditorias/{audit_id}/revisao/grupos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Grupos Revisao
+         * @description Itens pendentes de revisão agrupados pela decisão que pedem: uma decisão resolve o grupo inteiro.
+         */
+        get: operations["grupos_revisao_api_auditorias__audit_id__revisao_grupos_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auditorias/{audit_id}/ajustes-cadastro": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ajustes Cadastro
+         * @description NCM/NBS a confirmar no cadastro sem mudar o IBS/CBS (ADR 0029). `status=todos` lista também os decididos.
+         */
+        get: operations["ajustes_cadastro_api_auditorias__audit_id__ajustes_cadastro_get"];
+        put?: never;
+        /**
+         * Decidir Ajustes Cadastro
+         * @description Aceita o código sugerido, mantém o do ERP ou reabre a sugestão, para vários itens de uma vez.
+         */
+        post: operations["decidir_ajustes_cadastro_api_auditorias__audit_id__ajustes_cadastro_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auditorias/{audit_id}/reaplicar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reaplicar
+         * @description Refaz a decisão dos itens com as regras atuais, a partir das respostas da IA já gravadas (ADR 0029).
+         *     Não chama a IA nem gera custo; decisões de pessoas ficam como estão.
+         */
+        post: operations["reaplicar_api_auditorias__audit_id__reaplicar_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1258,6 +1326,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/regras/resumo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resumo Regras
+         * @description Regras pelo uso (ADR 0028): confirmadas pelas decisões de pessoas e divergências que tocam itens.
+         *
+         *     Lê uma organização por vez (a escolhida aqui ou a da sessão): as decisões nunca se misturam entre
+         *     organizações. Devolve só agregados (códigos, cClassTrib e contagens), sem produtos nem empresas.
+         */
+        get: operations["resumo_regras_api_regras_resumo_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/regras": {
         parameters: {
             query?: never;
@@ -1566,6 +1657,54 @@ export interface components {
             /** Updated At */
             updated_at: string | null;
         };
+        /** AjusteCadastroIn */
+        AjusteCadastroIn: {
+            /** Item Ids */
+            item_ids: string[];
+            /** Acao */
+            acao: string;
+            /** Comentario */
+            comentario?: string | null;
+        };
+        /** AjusteCadastroOut */
+        AjusteCadastroOut: {
+            /**
+             * Item Id
+             * Format: uuid
+             */
+            item_id: string;
+            /** Linha */
+            linha: number;
+            /** Descricao */
+            descricao: string;
+            /** Tipo Codigo */
+            tipo_codigo: string;
+            /** Erp */
+            erp: string | null;
+            /** Erp Formatado */
+            erp_formatado: string | null;
+            /** Sugerido */
+            sugerido: string | null;
+            /** Sugerido Formatado */
+            sugerido_formatado: string | null;
+            /** Alternativas */
+            alternativas: string[];
+            /** Cclasstrib */
+            cclasstrib: string | null;
+            /** Texto */
+            texto: string;
+            /** Status */
+            status: string | null;
+            /** Revisao Status */
+            revisao_status: string;
+        };
+        /** AjusteCadastroResultado */
+        AjusteCadastroResultado: {
+            /** Alterados */
+            alterados: number;
+            /** Mensagem */
+            mensagem: string;
+        };
         /** AlterarSenhaIn */
         AlterarSenhaIn: {
             /** Senha Atual */
@@ -1865,6 +2004,26 @@ export interface components {
             /** Descricao */
             descricao: string;
         };
+        /** CodigoNoUso */
+        CodigoNoUso: {
+            /** Codigo */
+            codigo: string;
+            /** Situacao */
+            situacao: string;
+            /** Decisoes */
+            decisoes: number;
+            /** Faltam */
+            faltam: number;
+            /** Cclasstrib */
+            cclasstrib: string | null;
+            /** Ramo */
+            ramo: string | null;
+            /**
+             * Itens
+             * @default 0
+             */
+            itens: number;
+        };
         /** CodigoOficial */
         CodigoOficial: {
             /** Codigo */
@@ -1984,8 +2143,41 @@ export interface components {
             motivos: string[];
             /** Review Id */
             review_id?: string | null;
+            /** Lote Id */
+            lote_id?: string | null;
+            /**
+             * Iguais
+             * @default 0
+             */
+            iguais: number;
             /** Mensagem */
             mensagem: string;
+        };
+        /** DivergenciaNoUso */
+        DivergenciaNoUso: {
+            /**
+             * Regra Id
+             * Format: uuid
+             */
+            regra_id: string;
+            /** Titulo */
+            titulo: string;
+            /** Descricao */
+            descricao: string;
+            /** Cclasstrib */
+            cclasstrib: string | null;
+            /** Mensagens */
+            mensagens: string[];
+            /** Gravidade */
+            gravidade: string;
+            /** Itens */
+            itens: number;
+            /** Resolvida */
+            resolvida: boolean;
+            /** Codigos Resolvidos */
+            codigos_resolvidos: number;
+            /** Codigos */
+            codigos: components["schemas"]["CodigoNoUso"][];
         };
         /** DossieDecisao */
         DossieDecisao: {
@@ -2287,6 +2479,35 @@ export interface components {
          * @enum {string}
          */
         FonteReferencia: "ncm" | "nbs" | "cclasstrib" | "lc214" | "normas";
+        /** GrupoRevisaoOut */
+        GrupoRevisaoOut: {
+            /** Chave */
+            chave: string;
+            /** Status */
+            status: string;
+            /** Tipo Codigo */
+            tipo_codigo: string | null;
+            /** Codigo */
+            codigo: string | null;
+            /** Codigo Formatado */
+            codigo_formatado: string | null;
+            /** Descricao Oficial */
+            descricao_oficial: string | null;
+            /** Cst */
+            cst: string | null;
+            /** Cclasstrib */
+            cclasstrib: string | null;
+            /** Imposto Seletivo */
+            imposto_seletivo: string | null;
+            /** Motivo */
+            motivo: string;
+            /** Itens */
+            itens: number;
+            /** Item Ids */
+            item_ids: string[];
+            /** Amostra */
+            amostra: string[];
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -2976,6 +3197,29 @@ export interface components {
              */
             updated_at: string;
         };
+        /** ReaplicarIn */
+        ReaplicarIn: {
+            /**
+             * Reanalisar Falhas
+             * @default false
+             */
+            reanalisar_falhas: boolean;
+        };
+        /** ReaplicarOut */
+        ReaplicarOut: {
+            /** Reaplicados */
+            reaplicados: number;
+            /** Mantidos */
+            mantidos: number;
+            /** Falhas De Ia */
+            falhas_de_ia: number;
+            /** Enviados Para Reanalise */
+            enviados_para_reanalise: number;
+            /** Em Segundo Plano */
+            em_segundo_plano: boolean;
+            /** Mensagem */
+            mensagem: string;
+        };
         /** RefazerIn */
         RefazerIn: {
             /**
@@ -3039,6 +3283,26 @@ export interface components {
             descricoes: {
                 [key: string]: string;
             };
+        };
+        /** RegraNoUso */
+        RegraNoUso: {
+            /**
+             * Regra Id
+             * Format: uuid
+             */
+            regra_id: string;
+            /** Titulo */
+            titulo: string;
+            /** Descricao */
+            descricao: string;
+            /** Cclasstrib */
+            cclasstrib: string | null;
+            /** Situacao */
+            situacao: string;
+            /** Codigos Confirmados */
+            codigos_confirmados: number;
+            /** Codigos */
+            codigos: components["schemas"]["CodigoNoUso"][];
         };
         /** RegraPatch */
         RegraPatch: {
@@ -3180,6 +3444,25 @@ export interface components {
             em_segundo_plano: boolean;
             /** Mensagem */
             mensagem: string;
+        };
+        /** ResumoRegras */
+        ResumoRegras: {
+            /** Organizacao Selecionada */
+            organizacao_selecionada: boolean;
+            /** Total Regras */
+            total_regras: number;
+            /** Aprovadas */
+            aprovadas: number;
+            /** Total Divergencias */
+            total_divergencias: number;
+            /** Decisoes */
+            decisoes: number;
+            /** Regras Em Uso */
+            regras_em_uso: components["schemas"]["RegraNoUso"][];
+            /** Divergencias */
+            divergencias: components["schemas"]["DivergenciaNoUso"][];
+            /** Divergencias Sem Itens */
+            divergencias_sem_itens: number;
         };
         /** RevisaoRegraIn */
         RevisaoRegraIn: {
@@ -4837,6 +5120,140 @@ export interface operations {
             };
         };
     };
+    grupos_revisao_api_auditorias__audit_id__revisao_grupos_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                audit_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GrupoRevisaoOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ajustes_cadastro_api_auditorias__audit_id__ajustes_cadastro_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+            };
+            header?: never;
+            path: {
+                audit_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AjusteCadastroOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decidir_ajustes_cadastro_api_auditorias__audit_id__ajustes_cadastro_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                audit_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AjusteCadastroIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AjusteCadastroResultado"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reaplicar_api_auditorias__audit_id__reaplicar_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                audit_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReaplicarIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReaplicarOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     desfazer_lote_api_auditorias__audit_id__lotes__lote_id__desfazer_post: {
         parameters: {
             query?: never;
@@ -5959,6 +6376,37 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resumo_regras_api_regras_resumo_get: {
+        parameters: {
+            query?: {
+                org_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResumoRegras"];
                 };
             };
             /** @description Validation Error */

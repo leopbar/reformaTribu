@@ -39,6 +39,26 @@ _PROPRIEDADES_JULGAMENTO: dict[str, Any] = {
     "justificativa": {"type": "string"},
     "sinais_de_duvida": {"type": "array", "items": {"type": "string"}},
     "codigos_alternativos": {"type": "array", "items": {"type": "string"}},
+    # ADR 0029: a dúvida aponta as palavras da descrição que a criam ("" = informação que falta).
+    "duvidas": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {"duvida": {"type": "string"}, "trecho": {"type": "string"}},
+            "required": ["duvida", "trecho"],
+            "additionalProperties": False,
+        },
+    },
+    # ADR 0029: opções em linguagem de loja para a pergunta "o que é este item?".
+    "opcoes_para_o_operador": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {"codigo": {"type": "string"}, "rotulo": {"type": "string"}},
+            "required": ["codigo", "rotulo"],
+            "additionalProperties": False,
+        },
+    },
 }
 
 SCHEMA_JULGAMENTO: dict[str, Any] = {
@@ -136,6 +156,21 @@ class AtributosExtraidos(BaseModel):
         return d
 
 
+class DuvidaIdentificacao(BaseModel):
+    duvida: str
+    trecho: str = ""
+
+
+class OpcaoOperador(BaseModel):
+    codigo: str
+    rotulo: str
+
+    @field_validator("codigo")
+    @classmethod
+    def _digitos(cls, v: str) -> str:
+        return "".join(c for c in v if c.isdigit())
+
+
 class Julgamento(BaseModel):
     ncm_atual_coerente: bool | None
     codigo_sugerido: str | None
@@ -149,6 +184,9 @@ class Julgamento(BaseModel):
     sinais_de_duvida: list[str] = Field(default_factory=list)
     # Outros códigos da lista que a dúvida poderia justificar (vazio nas análises antigas).
     codigos_alternativos: list[str] = Field(default_factory=list)
+    # Instrução v3 (ADR 0029); vazios nas análises antigas.
+    duvidas: list[DuvidaIdentificacao] = Field(default_factory=list)
+    opcoes_para_o_operador: list[OpcaoOperador] = Field(default_factory=list)
 
     @field_validator("codigos_alternativos")
     @classmethod
@@ -279,8 +317,17 @@ SCHEMA_INVESTIGACAO: dict[str, Any] = {
                     "refs": {"type": "array", "items": {"type": "string"}},
                     "muda_resultado": {"type": "boolean"},
                     "cclasstrib_em_jogo": {"type": "array", "items": {"type": "string"}},
+                    "fato_que_decide": {"type": "string"},
+                    "valor_para_o_outro_enquadramento": {"type": "string"},
                 },
-                "required": ["descricao", "refs", "muda_resultado", "cclasstrib_em_jogo"],
+                "required": [
+                    "descricao",
+                    "refs",
+                    "muda_resultado",
+                    "cclasstrib_em_jogo",
+                    "fato_que_decide",
+                    "valor_para_o_outro_enquadramento",
+                ],
                 "additionalProperties": False,
             },
         },
@@ -345,6 +392,9 @@ class Conflito(BaseModel):
     # Só um conflito que muda o cClassTrib aplicado trava o item (versões antigas não têm os campos).
     muda_resultado: bool = True
     cclasstrib_em_jogo: list[str] = Field(default_factory=list)
+    # ADR 0029: o fato que decide entre as fontes e o valor que levaria ao outro cClassTrib ("" = nenhum).
+    fato_que_decide: str = ""
+    valor_para_o_outro_enquadramento: str = ""
 
 
 class Investigacao(BaseModel):

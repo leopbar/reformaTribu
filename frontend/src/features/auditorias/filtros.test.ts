@@ -32,4 +32,10 @@ describe("filtros da tabela de resultado", () => {
     expect(fila[0]!.status).toBe("revisao_especialista");
     expect(ordenarFila(itens, "todos", "incertos")[0]!.confianca_global).toBe("baixa");
   });
+  it("fila de um grupo: só os itens dele, mesmo os já aprovados na sessão", () => {
+    const aprovado = item({ id: "g2", status: "revisao_contador", revisao_status: "aprovado" });
+    const grupo = [item({ id: "g1", status: "revisao_contador" }), aprovado];
+    const fila = ordenarFila([...itens, ...grupo], "todos", "linha", ["g1", "g2"]);
+    expect(fila.map((i) => i.id).sort()).toEqual(["g1", "g2"]);
+  });
 });

@@ -78,6 +78,8 @@ class StatusAuditoria(StrEnum):
     PROCESSANDO = "processando"
     AGUARDANDO_LOTE = "aguardando_lote"
     PAUSADA_ORCAMENTO = "pausada_orcamento"
+    # A plataforma de IA não respondeu (sem créditos, fora do ar): retoma sozinha (ADR 0029).
+    PAUSADA_IA = "pausada_ia"
     CONCLUIDA = "concluida"
     FALHOU = "falhou"
     CANCELADA = "cancelada"
@@ -161,6 +163,7 @@ class AcaoRevisao(StrEnum):
     REJEITAR = "rejeitar"
     DESFAZER = "desfazer"
     RESPONDER = "responder"
+    CADASTRO = "cadastro"  # ajuste de cadastro: NCM/NBS sugerido aceito, do ERP mantido ou reaberto
 
 
 class StatusChamadaLLM(StrEnum):
@@ -175,6 +178,14 @@ class StatusLote(StrEnum):
     CONCLUIDO = "concluido"
     FALHOU = "falhou"
     CANCELADO = "cancelado"
+
+
+class StatusAjusteCadastro(StrEnum):
+    """NCM/NBS a confirmar no cadastro quando a dúvida não muda o imposto (ADR 0029)."""
+
+    PENDENTE = "pendente"
+    ACEITO = "aceito"  # a pessoa aceitou o código sugerido
+    MANTIDO = "mantido"  # a pessoa manteve o código do ERP
 
 
 class StatusExportacao(StrEnum):

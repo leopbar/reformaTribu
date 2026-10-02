@@ -70,6 +70,10 @@ flowchart TD
   C --> F([fim])
 ```
 
+Se a plataforma de IA não responde em qualquer passo (sem créditos, fora do ar, limite de uso), nenhum
+caminho de reserva roda e o item não vai para revisão: a auditoria fica **pausada (a IA não respondeu)** e
+a tarefa `auditoria.retomar_pausadas_ia` a retoma sozinha, com espera crescente (ADR 0029).
+
 **Dossiê do estabelecimento** (`app/analise/dossie.py`). Antes de olhar os itens, o analista conhece quem
 vende (segmento, produção própria, fornecimento de refeições...). As respostas são fatos de escopo
 "empresa", valem para todos os itens e todas as auditorias seguintes, e entram na chave das teses.
@@ -113,14 +117,38 @@ normativo e Imposto Seletivo. Resultado e nível de revisão:
 
 | Situação | Quando | Quem resolve |
 |---|---|---|
-| Classificado | todas as dimensões confirmadas | ninguém (aprovação automática, se ligada) |
-| Aguardando informação | falta um fato que muda o enquadramento | operador responde a pergunta |
-| Revisão do contador | dúvida de identificação, NCM corrigido sem confirmação, IS, ponto de atenção | contador |
-| Revisão do especialista | conflito entre fontes, nenhuma hipótese sustentada, fundamento inválido | especialista tributário |
+| Classificado | todas as dimensões confirmadas, ou a dúvida de NCM não muda o imposto (o NCM vai para "Ajustes de cadastro") | ninguém (aprovação automática, se ligada) |
+| Aguardando informação | falta um fato que muda o enquadramento; "o que é este item?" quando os NCM possíveis têm impostos diferentes; "a empresa fabrica ou importa?" para o Imposto Seletivo | operador responde a pergunta |
+| Revisão do contador | dúvida de identificação que muda o imposto e não vira pergunta, lei citando o produto com outro NCM, IS de quem fabrica ou importa, ponto de atenção | contador |
+| Revisão do especialista | conflito entre fontes que nenhum fato resolve, nenhuma hipótese sustentada, fundamento inválido | especialista tributário |
+
+**Só vai para uma pessoa o que muda o imposto** (ADR 0029):
+
+- **"O imposto muda?"** Para cada dúvida de código, o tratamento (cClassTrib + IS) é calculado, sem IA, para
+  todos os códigos em disputa: o do ERP, o de cada parecer e as alternativas. Dois códigos com a mesma
+  assinatura jurídica (correlação oficial, itens dos anexos, benefícios pela natureza) têm o mesmo
+  tratamento. Todos iguais: o IBS/CBS sai e o NCM, quando muda o cadastro, vai para a lista **Ajustes de
+  cadastro** (aceitar a sugestão ou manter o NCM do ERP, em lote; até lá, a exportação mantém o do ERP).
+  Diferentes e conhecidos: pergunta "o que é este item?" ao operador; a resposta vira memória aprovada e o
+  item é reanalisado com o código escolhido.
+- **O NCM do ERP é um voto**: se o parecer que decide fica com ele, o código está confirmado (dois votos
+  contra um). Instruções v3 do Identificador e do Segundo parecer: conferir o código do cadastro em vez de
+  reclassificar do zero; dúvida só com palavra da descrição.
+- **Imposto Seletivo**: incide uma vez, na fabricação ou importação; para empresa que só revende, sai "na
+  origem" sem revisão. NCM que o Anexo XVII não cita nunca é sujeito, diga o parecer o que disser.
+- **Conflito com fato que decide**: o Jurista (v4) diz qual fato separa as fontes; o fato conhecido resolve,
+  o desconhecido vira pergunta. cClassTrib de outros cenários (diferimento, exportação, administração
+  pública…) não disputam a venda ao consumidor.
+- **Revisão por grupo**: a fila abre com os itens agrupados pela decisão que pedem; aprovar um item aprova
+  na hora os iguais da mesma auditoria (com desfazer).
+- **Medição sem IA** (`app/evals/replay.py`) e **Reaplicar regras (sem IA)** (`POST /auditorias/{id}/reaplicar`):
+  refazem a avaliação a partir das respostas da IA gravadas, usando a tese com que cada item foi
+  analisado (nunca a de outro dossiê); decisões de pessoas não mudam.
 
 **Perguntas agrupadas** (`pendencias`). Cada pergunta é feita no escopo mais amplo: empresa, categoria do
 ERP ou família (NCM). A resposta vira fato do grupo e **reavalia só os itens afetados, sem IA**
-(`aplicacao.reavaliar`). "Varia por item" permite responder item a item.
+(`aplicacao.reavaliar`). "Varia por item" permite responder item a item, exceto nas perguntas sobre a
+empresa: essas valem sempre para a empresa toda, mesmo respondidas no detalhe de um item.
 
 **Perfil tributário versionado** (`tax_profiles`). Item × cenário × vigência: CST, cClassTrib, reduções,
 Imposto Seletivo, hipótese, conclusão, dimensões e o registro completo (fatos usados, fundamentos, tese,
@@ -132,6 +160,9 @@ sobrescrito. `GET /itens/{id}/dossie` reconstrói o **dossiê de decisão** para
 - **Confirmação sem IA**: se o NCM/NBS informado existe, está vigente e é o primeiro colocado nas duas
   buscas independentes (por significado e por palavras) a partir da descrição, fica confirmado sem IA.
   Basta um sinal divergir (ex.: "sabonete líquido" com NCM de sabonete em barra) para ir à IA.
+- **Itens parecidos aprovados por pessoas** (ADR 0029): se uma pessoa da organização aprovou o mesmo NCM
+  do ERP para um item quase igual (semelhança ≥ 0,95) e nenhum item parecido foi decidido com outro código,
+  o NCM também é confirmado sem IA. Os códigos dos vizinhos entram na prova da IA como pista.
 - **Descrições repetidas**: a marca comercial e o GTIN não entram na análise (não definem o NCM), e as
   chamadas usam chave de idempotência pelo **conteúdo**: itens iguais de marcas diferentes compartilham
   uma única resposta (inclusive entre auditorias). Uma trava no Redis evita chamadas duplicadas simultâneas.
@@ -185,14 +216,15 @@ erDiagram
   AUDITS ||--o{ PENDENCIAS : pergunta
   AUDIT_ITEMS ||--o{ TAX_PROFILES : "perfil versionado"
   AUDITS ||--o{ EXPORT_JOBS : exporta
+  ITEM_REVIEWS ||--o| DECISION_MEMORY : "decisões de pessoas (ADR 0028)"
 ```
 
 | Grupo | Tabelas | Observações |
 |---|---|---|
 | Tenancy | `organizations`, `org_settings`, `users`, `memberships`, `company_access`, `companies`, `refresh_tokens`, `notifications` | Usuário pode ter vínculo com várias organizações, com um papel em cada. |
 | Base de referência (global) | `ref_versions`, `ncm_nodes`, `nbs_nodes`, `cst_codes`, `cclasstrib_codes`, `cclasstrib_correlacoes`, `legal_provisions`, `legal_rules`, `legal_rule_codes`, `condition_attributes`, `ref_snapshots` | Nunca sobrescrita. `legal_provisions` guarda os trechos da LC 214/2025 e dos demais atos (fonte `normas`), com vigência, busca textual e embeddings. `ref_snapshots` fixa as versões usadas por uma auditoria. |
-| Auditoria | `uploaded_files`, `mapping_templates`, `audits`, `audit_items`, `item_candidates`, `item_reviews`, `approved_memory` | `item_reviews` é somente inserção (gatilho bloqueia UPDATE). |
-| Analista fiscal | `company_facts`, `tax_theses`, `pendencias`, `tax_profiles` | Fatos com origem e histórico; teses reaproveitáveis; perguntas agrupadas; perfis versionados (dossiê de decisão). |
+| Auditoria | `uploaded_files`, `mapping_templates`, `audits`, `audit_items`, `item_candidates`, `item_reviews`, `approved_memory` | `item_reviews` é somente inserção (gatilho bloqueia UPDATE). `audit_items.ajuste_cadastro` / `ajuste_cadastro_status` guardam o NCM a confirmar no cadastro; `approved_memory.embedding` acha itens parecidos aprovados (ADR 0029). |
+| Analista fiscal | `company_facts`, `tax_theses`, `pendencias`, `tax_profiles`, `decision_memory` | Fatos com origem e histórico; teses reaproveitáveis; perguntas agrupadas; perfis versionados (dossiê de decisão); decisões de pessoas por NCM, cenário e ramo (ADR 0028). |
 | IA | `llm_calls`, `llm_batches` | Modelo, versão do prompt, tokens (entrada, saída, cache), custo, latência, request id. |
 | Exportação | `export_jobs`, `export_layouts` | |
 | Auditoria do sistema | `audit_log` | Somente inserção, encadeado por hash (gatilho `audit_log_encadear`). |

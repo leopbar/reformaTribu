@@ -1,6 +1,7 @@
 """Revisão humana: aprovar, corrigir o código, informar fatos, definir o enquadramento manualmente,
 rejeitar, desfazer e aprovar em lote. Toda decisão gera um registro imutável em item_reviews, versiona
-o perfil tributário e alimenta a memória aprovada da empresa."""
+o perfil tributário e alimenta a memória aprovada da empresa e a memória de decisões da organização
+(ADR 0028)."""
 
 from __future__ import annotations
 
@@ -13,8 +14,9 @@ from typing import Any
 from sqlalchemy import and_, select, true, update
 from sqlalchemy.orm import Session
 
-from app.analise import aplicacao
+from app.analise import aplicacao, decisoes
 from app.analise import fatos as fatos_mod
+from app.core.codes import formatar_codigo
 from app.core.errors import Conflito, NaoEncontrado
 from app.ingest.cleaning import hash_descricao
 from app.models import ApprovedMemory, Audit, AuditItem, CClassTribCode, ItemReview, RefSnapshot
@@ -23,6 +25,7 @@ from app.models.enums import (
     AcaoRevisao,
     EscopoFato,
     OrigemFato,
+    StatusAjusteCadastro,
     StatusItem,
     StatusRevisao,
 )
@@ -64,6 +67,7 @@ CAMPOS_FOTO = (
     "confianca_global",
     "aprovado_automaticamente",
     "is_situacao",
+    "ajuste_cadastro_status",
 )
 
 
@@ -192,7 +196,10 @@ def _aprovar_um(
     antes = foto(item)
     item.revisao_status = StatusRevisao.APROVADO
     item.aprovado_automaticamente = False
-    item.final_tipo_codigo, item.final_codigo = item.tipo_codigo_sugerido, item.codigo_sugerido
+    # Quem aprova o item vê a sugestão de NCM e a aceita junto (ADR 0029).
+    if item.ajuste_cadastro_status == StatusAjusteCadastro.PENDENTE:
+        item.ajuste_cadastro_status = StatusAjusteCadastro.ACEITO
+    item.final_tipo_codigo, item.final_codigo = item.tipo_codigo_sugerido, aplicacao.codigo_para_o_cadastro(item)
     item.final_cst, item.final_cclasstrib = item.cst_sugerido, item.cclasstrib_sugerido
     item.final_regra_id, item.final_dispositivo = item.regra_id, item.dispositivo_legal
     item.revisado_por, item.revisado_em = revisor.user_id, datetime.now(UTC)
@@ -208,6 +215,7 @@ def _aprovar_um(
         cst=item.final_cst,
         cclasstrib=item.final_cclasstrib,
     )
+    decisoes.registrar(session, item, audit, review.id, revisor.user_id, revisor.email)
     aplicacao.versionar_perfil(
         session, item, audit, registro={"revisao": review.id.hex, "revisor": revisor.email}, motivo="aprovado"
     )
@@ -217,6 +225,183 @@ def _aprovar_um(
 def aprovar(session: Session, item_id: uuid.UUID, revisor: Revisor, comentario: str | None = None) -> ItemReview:
     item, audit = _carregar(session, item_id)
     return _aprovar_um(session, item, audit, revisor, comentario)
+
+
+# ---------------------------------------------------------------- decisão que vale para os iguais --
+_RUINS = ("atencao", "falha", "pendente")
+
+
+def assinatura_da_decisao(item: AuditItem, *, com_descricao: bool = True) -> tuple[Any, ...] | None:
+    """Itens que pedem a MESMA decisão (ADR 0029): mesmo código, mesmo resultado sugerido, mesmos motivos,
+    mesmas dimensões em dúvida e mesmos fatos decisivos. Dúvida de identificação é do próprio produto: aí
+    só são iguais itens com a mesma descrição."""
+    idt = item.identidade or {}
+    if not idt.get("codigo") or not item.cclasstrib_sugerido:
+        return None
+    ruins = sorted(k for k, d in (item.dimensoes or {}).items() if (d or {}).get("situacao") in _RUINS)
+    chave: tuple[Any, ...] = (
+        item.status,
+        idt.get("tipo_codigo"),
+        idt.get("codigo"),
+        item.cclasstrib_sugerido,
+        item.cst_sugerido,
+        item.is_situacao,
+        tuple(sorted(item.motivos or [])),
+        tuple(ruins),
+        decisoes.chave_fatos(item.fatos_usados),
+    )
+    if com_descricao and {"identificacao", "codigo_fiscal"} & set(ruins):
+        chave += (hash_descricao(item.descricao_normalizada or item.descricao),)
+    return chave
+
+
+def aprovar_e_aplicar_aos_iguais(
+    session: Session, item_id: uuid.UUID, revisor: Revisor, comentario: str | None = None
+) -> tuple[ItemReview, uuid.UUID | None, int]:
+    """Aprova o item e, na mesma auditoria, os itens pendentes que pedem a mesma decisão (ADR 0029). Os
+    iguais formam um lote, que pode ser desfeito de uma vez."""
+    item, audit = _carregar(session, item_id)
+    assinatura = assinatura_da_decisao(item)
+    review = _aprovar_um(session, item, audit, revisor, comentario)
+    if assinatura is None:
+        return review, None, 0
+    candidatos = session.scalars(
+        select(AuditItem).where(
+            AuditItem.audit_id == item.audit_id,
+            AuditItem.id != item.id,
+            AuditItem.ignorado.is_(False),
+            AuditItem.revisao_status == StatusRevisao.PENDENTE,
+            AuditItem.status.in_(list(STATUS_REVISAVEIS)),
+            AuditItem.cclasstrib_sugerido == item.cclasstrib_sugerido,
+            AuditItem.codigo_sugerido == item.codigo_sugerido,
+        )
+    )
+    iguais = [i for i in candidatos if not i.perguntas and assinatura_da_decisao(i) == assinatura]
+    if not iguais:
+        return review, None, 0
+    lote_id = uuid.uuid4()
+    nota = f"Mesma decisão do item da linha {item.linha} ({item.descricao[:60]})"
+    for i in iguais:
+        _aprovar_um(session, i, audit, revisor, nota, lote_id)
+    return review, lote_id, len(iguais)
+
+
+@dataclass
+class GrupoRevisao:
+    chave: str
+    status: str
+    tipo_codigo: str | None
+    codigo: str | None
+    codigo_formatado: str | None
+    descricao_oficial: str | None
+    cst: str | None
+    cclasstrib: str | None
+    imposto_seletivo: str | None
+    motivo: str
+    item_ids: list[uuid.UUID]
+    amostra: list[str]
+
+
+def grupos_de_revisao(session: Session, audit_id: uuid.UUID) -> list[GrupoRevisao]:
+    """Itens pendentes de revisão agrupados pela decisão que pedem (ADR 0029), dos maiores para os menores."""
+    import hashlib
+
+    itens = session.scalars(
+        select(AuditItem)
+        .where(
+            AuditItem.audit_id == audit_id,
+            AuditItem.ignorado.is_(False),
+            AuditItem.revisao_status == StatusRevisao.PENDENTE,
+            AuditItem.status.in_([StatusItem.REVISAO_CONTADOR, StatusItem.REVISAO_ESPECIALISTA]),
+        )
+        .order_by(AuditItem.linha)
+    )
+    grupos: dict[tuple[Any, ...], list[AuditItem]] = {}
+    for i in itens:
+        if i.perguntas:
+            continue
+        # Sem código ou sem resultado sugerido, o item não se junta a nenhum outro: vira um cartão próprio.
+        a = assinatura_da_decisao(i, com_descricao=False) or ("item", str(i.id))
+        grupos.setdefault(a, []).append(i)
+    saida = []
+    for a, membros in grupos.items():
+        p = membros[0]
+        idt = p.identidade or {}
+        ruim = next(
+            (d for d in (p.dimensoes or {}).values() if (d or {}).get("situacao") in ("falha", "atencao")), None
+        )
+        tipo = idt.get("tipo_codigo")
+        saida.append(
+            GrupoRevisao(
+                chave=hashlib.sha256(repr(a).encode()).hexdigest()[:16],
+                status=p.status,
+                tipo_codigo=tipo,
+                codigo=idt.get("codigo"),
+                codigo_formatado=formatar_codigo(tipo or "ncm", idt["codigo"]) if idt.get("codigo") else None,
+                descricao_oficial=((idt.get("descricao_oficial") or "").split(" › ")[-1] or None),
+                cst=p.cst_sugerido,
+                cclasstrib=p.cclasstrib_sugerido,
+                imposto_seletivo=p.is_situacao,
+                motivo=(f"{(ruim or {}).get('rotulo', '')}: {(ruim or {}).get('texto', '')}" if ruim else "")[:400],
+                item_ids=[m.id for m in membros],
+                amostra=[m.descricao for m in membros[:5]],
+            )
+        )
+    return sorted(saida, key=lambda g: (-len(g.item_ids), g.cclasstrib is None, g.codigo or ""))
+
+
+# ---------------------------------------------------------------------------- ajustes de cadastro --
+ACOES_CADASTRO = {
+    "aceitar": StatusAjusteCadastro.ACEITO,
+    "manter": StatusAjusteCadastro.MANTIDO,
+    "reabrir": StatusAjusteCadastro.PENDENTE,
+}
+
+
+def decidir_ajustes_cadastro(
+    session: Session,
+    audit_id: uuid.UUID,
+    item_ids: list[uuid.UUID],
+    acao: str,
+    revisor: Revisor,
+    comentario: str | None = None,
+) -> int:
+    """Aceita o NCM/NBS sugerido, mantém o do ERP ou reabre a sugestão (ADR 0029). Não muda o IBS/CBS: a
+    sugestão só existe quando todos os códigos possíveis têm o mesmo tratamento. Vira memória da empresa."""
+    novo = ACOES_CADASTRO[acao]
+    audit = session.get(Audit, audit_id)
+    if audit is None:
+        raise NaoEncontrado("Auditoria não encontrada.")
+    n = 0
+    for item in session.scalars(select(AuditItem).where(AuditItem.audit_id == audit_id, AuditItem.id.in_(item_ids))):
+        ajuste = item.ajuste_cadastro or {}
+        if not ajuste or item.ajuste_cadastro_status == novo:
+            continue
+        codigo = ajuste.get("sugerido") if novo == StatusAjusteCadastro.ACEITO else ajuste.get("erp")
+        if novo != StatusAjusteCadastro.PENDENTE and not codigo:
+            continue  # aceitar sem sugestão, ou manter sem NCM do ERP: não há código para gravar
+        antes = foto(item)
+        item.ajuste_cadastro_status = novo
+        if item.revisao_status == StatusRevisao.APROVADO:
+            item.final_codigo = aplicacao.codigo_para_o_cadastro(item)
+        texto = {"aceitar": "NCM/NBS sugerido aceito", "manter": "NCM/NBS do ERP mantido", "reabrir": "reaberto"}
+        review = _registrar(
+            session, item, AcaoRevisao.CADASTRO, antes, revisor, comentario or f"Ajuste de cadastro: {texto[acao]}"
+        )
+        if novo != StatusAjusteCadastro.PENDENTE and codigo:
+            _memoria(
+                session,
+                item,
+                audit,
+                review,
+                revisor,
+                tipo_codigo=ajuste.get("tipo_codigo") or "ncm",
+                codigo=str(codigo),
+                cst=item.final_cst,
+                cclasstrib=item.final_cclasstrib,
+            )
+        n += 1
+    return n
 
 
 def editar(
@@ -341,6 +526,7 @@ def desfazer(session: Session, item_id: uuid.UUID, revisor: Revisor) -> ItemRevi
     antes = foto(item)
     restaurar(item, ultima.antes)
     session.execute(update(ApprovedMemory).where(ApprovedMemory.review_id == ultima.id).values(ativo=False))
+    decisoes.desativar(session, ultima.id)
     return _registrar(session, item, AcaoRevisao.DESFAZER, antes, revisor, None, desfaz=ultima.id)
 
 
@@ -407,6 +593,7 @@ def desfazer_lote(session: Session, audit_id: uuid.UUID, lote_id: uuid.UUID, rev
         antes = foto(item)
         restaurar(item, r.antes)
         session.execute(update(ApprovedMemory).where(ApprovedMemory.review_id == r.id).values(ativo=False))
+        decisoes.desativar(session, r.id)
         _registrar(session, item, AcaoRevisao.DESFAZER, antes, revisor, "Desfazer aprovação em lote", desfaz=r.id)
         n += 1
     return n

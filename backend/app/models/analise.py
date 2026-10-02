@@ -7,6 +7,8 @@
 - `Pendencia`: pergunta que muda o enquadramento, feita no escopo mais amplo possível.
 - `TaxProfile`: o perfil tributário de um item num cenário e vigência. Cada reavaliação que muda o
   resultado cria uma versão nova; as anteriores ficam registradas (dossiê de decisão).
+- `DecisionMemory`: o enquadramento que uma pessoa aprovou ou corrigiu para um NCM/NBS num cenário e
+  ramo (ADR 0028). Reforça ou contesta a conclusão do analista nos itens seguintes da organização.
 """
 
 from __future__ import annotations
@@ -146,4 +148,39 @@ class TaxProfile(Base):
     registro: Mapped[dict[str, Any]] = mapped_column(default=dict)
     thesis_id: Mapped[uuid.UUID | None]
     motivo_versao: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = created_at()
+
+
+class DecisionMemory(Base):
+    """Decisão de uma pessoa sobre o enquadramento de um código (ADR 0028).
+
+    Vale para a organização inteira, entre empresas do mesmo ramo (`segmento`); empresa sem ramo
+    só aproveita as próprias decisões. Desfazer a decisão desativa o registro."""
+
+    __tablename__ = "decision_memory"
+    __table_args__ = (Index("ix_decision_memory_busca", "tipo_codigo", "codigo", "cenario", "ativo"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), index=True)
+    company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id", ondelete="CASCADE"))
+    audit_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("audits.id", ondelete="CASCADE"))
+    item_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("audit_items.id", ondelete="CASCADE"))
+    review_id: Mapped[uuid.UUID | None]
+    segmento: Mapped[str | None] = mapped_column(String(40))
+    cenario: Mapped[str] = mapped_column(String(40))
+    tipo_codigo: Mapped[str] = mapped_column(String(3))
+    codigo: Mapped[str] = mapped_column(String(12))
+    cclasstrib: Mapped[str] = mapped_column(String(6))
+    cst: Mapped[str | None] = mapped_column(String(3))
+    imposto_seletivo: Mapped[str | None] = mapped_column(String(20))  # nao_sujeito | sujeito
+    # Fatos que decidiram o enquadramento ("atributo=valor" ordenados); a decisão só vale com os mesmos.
+    fatos_chave: Mapped[str] = mapped_column(Text, default="")
+    fatos: Mapped[list[Any]] = mapped_column(default=list)
+    # Dispositivos citados na decisão (ex.: "LC 214/2025 Anexo I, item 2"): ligam a decisão à regra legal.
+    dispositivo: Mapped[str | None] = mapped_column(Text)
+    origem: Mapped[str] = mapped_column(String(20))  # aprovacao | correcao
+    peso: Mapped[int] = mapped_column(Integer, default=1)
+    user_id: Mapped[uuid.UUID | None]
+    user_email: Mapped[str | None] = mapped_column(String(320))
+    ativo: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = created_at()

@@ -419,7 +419,33 @@ async def responder_pendencia(
             "itens": len(dados.respostas_itens),
         },
     )
-    alvo = list(dados.respostas_itens) if dados.valor is None else item_ids
+    alvo = list(dados.respostas_itens) if dados.valor is None and p.escopo != EscopoFato.EMPRESA else item_ids
+    if p.escopo == EscopoFato.EMPRESA:
+        # Fato da empresa (ADR 0029): a mesma pergunta aberta em outras auditorias da empresa também fica
+        # respondida, e os itens dela são reavaliados.
+        def _outras(s: Session) -> list[uuid.UUID]:
+            mais: list[uuid.UUID] = []
+            for outra in pend_mod.pendencias_empresa_abertas(s, p.company_id, {p.atributo}):
+                outra.status, outra.resposta = StatusPendencia.RESPONDIDA, p.resposta
+                outra.respondido_por, outra.respondido_por_email = principal.user_id, principal.email
+                mais.extend(outra.item_ids)
+            return mais
+
+        alvo = list(dict.fromkeys([*alvo, *await session.run_sync(_outras)]))
+    if p.atributo == pend_mod.FATO_CODIGO:
+        # "O que é este item?" (ADR 0029): o código escolhido é analisado de novo (pode chamar a IA).
+        reprocessar = await session.run_sync(lambda s: pend_mod.identificar_pela_resposta(s, p.id, autor, alvo))
+        if reprocessar:
+            a = await session.get(Audit, p.audit_id)
+            assert a is not None
+            if a.status == StatusAuditoria.CONCLUIDA:
+                a.status = StatusAuditoria.PROCESSANDO
+            a.modo = "tempo_real"
+            await session.commit()
+            from app.audits.processing import enfileirar_itens
+
+            enfileirar_itens(a.id, a.org_id, reprocessar)
+        alvo = [i for i in alvo if i not in set(reprocessar)]
     n, fundo = await _reavaliar_ou_enfileirar(session, p.org_id, alvo, f"resposta de {principal.email}")
     await _atualizar_contadores({p.audit_id}, p.org_id, session)
     await session.refresh(p)

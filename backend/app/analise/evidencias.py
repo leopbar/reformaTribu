@@ -276,6 +276,7 @@ def montar(
                         "descricao": a.get("mensagem"),
                         "gravidade": a.get("gravidade"),
                         "regra": r.dispositivo_legal,
+                        "tipo": a.get("codigo"),  # fora da impressão da tese (investigacao._CAMPOS_ALERTA)
                         "cclasstrib": r.cclasstrib,
                         # Códigos afetados pela divergência (vazio = a regra inteira).
                         "codigos": a.get("codigos") or [],

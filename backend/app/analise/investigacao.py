@@ -127,6 +127,9 @@ def validar(dados: dict[str, Any], ev: Evidencias) -> tuple[dict[str, Any], dict
         f["fato"] = chave(f["fato"])
     for c in dados.get("imposto_seletivo", {}).get("condicoes", []):
         c["fato"] = chave(c["fato"])
+    for c in dados.get("conflitos", []):
+        if c.get("fato_que_decide"):
+            c["fato_que_decide"] = chave(c["fato_que_decide"])
     return {**dados, "hipoteses": hipoteses}, rel
 
 

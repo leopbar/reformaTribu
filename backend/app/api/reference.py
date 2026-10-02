@@ -40,6 +40,7 @@ from app.reference.service import INSTRUCOES_UPLOAD
 from app.rules.divergencias import ContextoDivergencias, exige_justificativa
 from app.rules.official import sincronizar_codigos
 from app.rules.schema import de_yaml, para_yaml, regra_para_declarativa
+from app.rules.uso import resumo as resumo_pelo_uso
 from app.rules.validation import validar_regra
 from app.storage import files
 from app.worker.celery_app import celery_app
@@ -310,6 +311,62 @@ def _resumo_regra(r: LegalRule) -> RegraResumo:
         controverso=r.controverso,
         updated_at=r.updated_at,
     )
+
+
+class CodigoNoUso(BaseModel):
+    codigo: str
+    situacao: str  # confirmado | em_confirmacao | divergem | outro | sem_decisao
+    decisoes: int
+    faltam: int
+    cclasstrib: str | None
+    ramo: str | None
+    itens: int = 0
+
+
+class RegraNoUso(BaseModel):
+    regra_id: uuid.UUID
+    titulo: str
+    descricao: str
+    cclasstrib: str | None
+    situacao: str  # confirmada | em_confirmacao
+    codigos_confirmados: int
+    codigos: list[CodigoNoUso]
+
+
+class DivergenciaNoUso(BaseModel):
+    regra_id: uuid.UUID
+    titulo: str
+    descricao: str
+    cclasstrib: str | None
+    mensagens: list[str]
+    gravidade: str
+    itens: int
+    resolvida: bool
+    codigos_resolvidos: int
+    codigos: list[CodigoNoUso]
+
+
+class ResumoRegras(BaseModel):
+    organizacao_selecionada: bool
+    total_regras: int
+    aprovadas: int
+    total_divergencias: int
+    decisoes: int
+    regras_em_uso: list[RegraNoUso]
+    divergencias: list[DivergenciaNoUso]
+    divergencias_sem_itens: int
+
+
+@router.get("/regras/resumo", response_model=ResumoRegras)
+async def resumo_regras(principal: SuperAdminDep, org_id: uuid.UUID | None = None) -> Any:
+    """Regras pelo uso (ADR 0028): confirmadas pelas decisões de pessoas e divergências que tocam itens.
+
+    Lê uma organização por vez (a escolhida aqui ou a da sessão): as decisões nunca se misturam entre
+    organizações. Devolve só agregados (códigos, cClassTrib e contagens), sem produtos nem empresas."""
+    org = org_id or principal.org_id
+    ctx = TenantContext(org_id=org, user_id=principal.user_id, platform_admin=principal.platform_admin)
+    async with tenant_session(ctx) as session:
+        return await session.run_sync(lambda s: resumo_pelo_uso(s, org is not None))
 
 
 @router.get("/regras", response_model=PaginaRegras)

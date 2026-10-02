@@ -1,4 +1,4 @@
-from app.models.analise import CompanyFact, Pendencia, TaxProfile, TaxThesis
+from app.models.analise import CompanyFact, DecisionMemory, Pendencia, TaxProfile, TaxThesis
 from app.models.audit import (
     Abbreviation,
     ApprovedMemory,
@@ -51,6 +51,7 @@ __all__ = [
     "CompanyFact",
     "ConditionAttribute",
     "CstCode",
+    "DecisionMemory",
     "ExportJob",
     "ExportLayout",
     "ItemCandidate",

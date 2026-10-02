@@ -67,6 +67,7 @@ async def painel(principal: Ver, session: SessionDep) -> Painel:
         StatusAuditoria.PROCESSANDO,
         StatusAuditoria.AGUARDANDO_LOTE,
         StatusAuditoria.PAUSADA_ORCAMENTO,
+        StatusAuditoria.PAUSADA_IA,
     )
     andamento_por_emp = (
         dict(
