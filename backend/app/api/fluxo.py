@@ -45,6 +45,12 @@ class CaminhoOut(BaseModel):
     custo_usd: float
 
 
+def _inicio_da_busca_guiada(c: LlmCall) -> bool:
+    """A chamada é a escolha do capítulo, o primeiro passo de cada busca guiada do Navegador?"""
+    conteudo = ((c.requisicao or {}).get("resumo") or {}).get("conteudo") or {}
+    return isinstance(conteudo, dict) and conteudo.get("nivel") == "capitulo"
+
+
 def _chamada(c: LlmCall, item_id: uuid.UUID, *, compartilhada: bool = False) -> dict[str, Any]:
     reaproveitada = not compartilhada and c.item_id != item_id
     return {
@@ -95,8 +101,10 @@ async def caminho_item(item_id: uuid.UUID, principal: Ver, session: SessionDep) 
     chamadas: dict[str, dict[str, Any]] = {}
     for c in await session.scalars(select(LlmCall).where(LlmCall.item_id == i.id).order_by(LlmCall.created_at)):
         cx = caminho.NO_CAIXA.get(c.no)
-        if cx and cx in chamadas and cx == "navegador":
-            # A busca guiada faz uma chamada por nível da árvore: soma o custo.
+        if cx and cx in chamadas and cx == "navegador" and not _inicio_da_busca_guiada(c):
+            # A busca guiada faz uma chamada por nível da árvore: soma o custo. Cada busca começa pela
+            # escolha do capítulo, e só a última conta (as de reanálises anteriores, talvez com outro modelo,
+            # ficam de fora).
             atual = chamadas[cx]
             nova = _chamada(c, i.id)
             atual["custo_usd"] = round(float(atual["custo_usd"]) + float(nova["custo_usd"]), 6)

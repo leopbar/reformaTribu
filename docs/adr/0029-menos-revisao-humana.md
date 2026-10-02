@@ -175,3 +175,19 @@ assado, sushi e salada). A revisão encontrou e corrigiu:
   (0709.99.90, Anexo XV)". Na medição sem IA, nenhum falso automático; o "sabonete líquido × em barra" e
   outras dúvidas da mesma natureza deixam o contador e vão ao operador. Custo: cerca de US$ 0,01 a mais
   por item navegado com dúvida de capítulo (de 4 a 6 chamadas do Navegador).
+- **Título genérico da posição e limite de saída.** Numa nova reanálise, o frango assado ficou sem NCM:
+  o Navegador escolheu o capítulo 16, mas descartou a posição 16.02 ("Outras preparações e conservas de
+  carne…") porque "nenhuma menciona aves"; a palavra só aparece um nível abaixo ("De aves da posição
+  01.05"). Com o modelo trocado para GPT-5 e esforço alto, ele acertou a posição, mas a resposta do código
+  foi cortada: o raciocínio conta no limite de saída, e o Navegador pedia só 4.000 tokens. Correções
+  gerais:
+  - no nível "posição", cada opção mostra o que inclui (os nomes de até 8 subdivisões); a instrução v5
+    do Navegador diz que títulos gerais abrangem o que não nomeiam ("carne" inclui a de aves) e que uma
+    opção "Outras…" não se descarta por não citar o item;
+  - nos modelos que raciocinam, o limite de saída de qualquer agente sobe com o esforço (médio: 12.000;
+    alto: 20.000), já que só se paga o que é usado;
+  - o caminho do item mostrava, no Navegador, o modelo da primeira busca e o custo de todas as buscas
+    desde a primeira análise (parecia que a troca de modelo não valia); agora mostra só a última busca.
+
+  Resultado: capítulo 16 → 16.02 (citando "de aves da posição 01.05") → **1602.32.20**, classificado
+  com o IBS/CBS integral e o NCM na lista "Ajustes de cadastro" (GPT-5, esforço alto, US$ 0,12).

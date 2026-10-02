@@ -300,6 +300,10 @@ classificado sozinho com resultado diferente do que uma pessoa já tinha decidid
   conservado), procura o código nos dois e dá a cada opção um nome de loja ("hortaliças frescas cortadas"
   × "salada preparada"). Se os impostos forem diferentes, o operador responde qual é o item, em vez de o
   contador revisar. Se num dos capítulos nenhum código for achado, o item não sai sozinho.
+- **Navegador (instrução v5):** ao escolher a posição, vê o que cada uma inclui (ex.: 16.02 "Outras
+  preparações de carne" inclui "de aves"), e sabe que um título geral abrange o que não nomeia. Com
+  esforço de raciocínio maior, todos os agentes recebem mais espaço de resposta, para o raciocínio não
+  cortar a resposta.
 - **Jurista (instrução v4):** todo conflito diz qual fato o resolve (ex.: "destinado a ração?"); o fato
   conhecido resolve sozinho.
 - **Juiz:** pergunta "o imposto muda?". Se todos os NCM possíveis dão o mesmo imposto, o item sai

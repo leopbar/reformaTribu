@@ -57,11 +57,23 @@ def cliente_anthropic() -> anthropic.Anthropic:
     return _cliente_anthropic(chave, base, get_settings().llm_timeout_s)
 
 
+# Nos modelos que raciocinam, o raciocínio conta no limite de saída. O limite de cada agente foi pensado para
+# a resposta: com esforço maior, o modelo gastava tudo pensando e a resposta saía "cortada por limite de
+# tamanho" (Navegador com gpt-5 e esforço alto, 02/10/2026). Só se paga o que for usado.
+PISO_DE_SAIDA_POR_ESFORCO = {"medium": 12000, "high": 20000}
+
+
+def limite_de_saida(req: RequisicaoLLM) -> int:
+    if not catalogo.suporta_esforco(req.modelo):
+        return req.max_tokens
+    return max(req.max_tokens, PISO_DE_SAIDA_POR_ESFORCO.get(req.esforco, 0))
+
+
 def params_anthropic(req: RequisicaoLLM) -> dict[str, Any]:
     """Parâmetros da Messages API. O bloco de sistema é estável e fica em cache."""
     return {
         "model": req.modelo,
-        "max_tokens": req.max_tokens,
+        "max_tokens": limite_de_saida(req),
         "system": [{"type": "text", "text": req.prompt.texto, "cache_control": {"type": "ephemeral"}}],
         "messages": [{"role": "user", "content": _conteudo(req)}],
         "output_config": {
@@ -86,13 +98,13 @@ def _corpo_compativel(req: RequisicaoLLM, provedor: str) -> dict[str, Any]:
         )
         return {
             "model": req.modelo,
-            "max_tokens": req.max_tokens,
+            "max_tokens": limite_de_saida(req),
             "messages": [{"role": "system", "content": sistema}, {"role": "user", "content": _conteudo(req)}],
             "response_format": {"type": "json_object"},
         }
     corpo: dict[str, Any] = {
         "model": req.modelo,
-        "max_completion_tokens": req.max_tokens,
+        "max_completion_tokens": limite_de_saida(req),
         "messages": [{"role": "system", "content": req.prompt.texto}, {"role": "user", "content": _conteudo(req)}],
         "response_format": {
             "type": "json_schema",

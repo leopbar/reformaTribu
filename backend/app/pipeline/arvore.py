@@ -76,6 +76,28 @@ def _folhas(s: Any, fonte: str, versao: uuid.UUID, prefixo: str) -> list[dict[st
     return [{"codigo": r.codigo, "descricao": r.descricao_completa, "folha": True} for r in rows]
 
 
+MAX_SUBDIVISOES = 8  # nomes de subdivisões mostrados por opção no nível "posicao"
+
+
+def _subdivisoes(s: Any, fonte: str, versao: uuid.UUID, codigos: list[str]) -> dict[str, str]:
+    """O que cada nível abrange, pelos nomes das subdivisões. O título de uma posição costuma ser genérico
+    ("Outras preparações e conservas de carne…"): sem ver que ela inclui "De aves da posição 01.05", a IA
+    descartou a posição certa do frango assado (ADR 0029)."""
+    if not codigos:
+        return {}
+    rows = s.execute(
+        text(
+            f"SELECT codigo_pai, descricao FROM {_tabela(fonte)} "
+            "WHERE version_id = :v AND codigo_pai = ANY(:c) ORDER BY codigo"
+        ),
+        {"v": versao, "c": codigos},
+    ).all()
+    nomes: dict[str, list[str]] = {}
+    for r in rows:
+        nomes.setdefault(r.codigo_pai, []).append(" ".join(r.descricao.split())[:80])
+    return {c: "; ".join(n[:MAX_SUBDIVISOES]) + ("; …" if len(n) > MAX_SUBDIVISOES else "") for c, n in nomes.items()}
+
+
 def _descricao_folha(desc: str) -> str:
     """Os três últimos níveis da hierarquia: o suficiente para distinguir os códigos da mesma posição."""
     return " › ".join(desc.split(" › ")[-3:])
@@ -130,6 +152,7 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
                 {
                     "codigo": o["codigo"],
                     "descricao": _descricao_folha(o["descricao"]) if nivel == "codigo" else o["descricao"],
+                    **({"inclui": o["inclui"]} if o.get("inclui") else {}),
                 }
                 for o in opcoes
             ],
@@ -183,6 +206,10 @@ def navegar_arvore(state: ItemState, runtime: Rt) -> dict[str, Any]:
             if len(folhas) <= MAX_FOLHAS_DIRETAS:
                 opcoes = folhas
             nivel = "codigo" if all(o["folha"] for o in opcoes) else "posicao"
+            if nivel == "posicao":
+                with sync_tenant_session(ctx.tenant) as s:
+                    inclui = _subdivisoes(s, fonte, versao, [o["codigo"] for o in opcoes if not o["folha"]])
+                opcoes = [{**o, "inclui": inclui.get(o["codigo"], "")} for o in opcoes]
             resposta = perguntar(nivel, opcoes, caminho, registro, hipotese)
             if resposta is None or resposta.escolha is None:
                 break

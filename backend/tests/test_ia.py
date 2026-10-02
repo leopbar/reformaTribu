@@ -78,6 +78,21 @@ def test_recomendacoes_apontam_para_modelos_do_catalogo() -> None:
         assert catalogo.AGENTES[agente]["padrao"] in conhecidos
 
 
+def test_limite_de_saida_cresce_com_o_esforco_de_raciocinio() -> None:
+    """O raciocínio conta no limite: com esforço alto, 4.000 tokens cortavam a resposta do Navegador."""
+    from types import SimpleNamespace
+
+    def req(modelo: str, esforco: str, limite: int = 4000) -> SimpleNamespace:
+        return SimpleNamespace(modelo=modelo, esforco=esforco, max_tokens=limite)
+
+    assert provedores.limite_de_saida(req("gpt-5", "high")) == 20000  # type: ignore[arg-type]
+    assert provedores.limite_de_saida(req("gpt-5", "medium")) == 12000  # type: ignore[arg-type]
+    assert provedores.limite_de_saida(req("gpt-5", "low")) == 4000  # type: ignore[arg-type]
+    assert provedores.limite_de_saida(req("gpt-5", "high", 30000)) == 30000  # type: ignore[arg-type]
+    # Modelo sem raciocínio: vale o limite do agente.
+    assert provedores.limite_de_saida(req("gpt-4.1-mini", "high")) == 4000  # type: ignore[arg-type]
+
+
 def test_esquemas_fechados_usam_modo_estrito_na_openai() -> None:
     from app.llm.schemas import SCHEMA_FATOS_ITEM, SCHEMA_NAVEGACAO
 
