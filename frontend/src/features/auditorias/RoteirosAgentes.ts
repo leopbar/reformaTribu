@@ -416,7 +416,7 @@ export const ROTEIROS: Record<string, Roteiro> = {
           { se: "sim: o item volta só ao Juiz, sem gastar IA", vai: "juiz", tom: "humano" },
           { se: "ainda não", vai: "aguardando_informacao", tom: "fim" },
         ],
-        nota: "Uma resposta vale para o grupo inteiro: 50 itens iguais, 1 pergunta.",
+        nota: "50 itens iguais, 1 pergunta: a lista fica à vista e cada item recebe a sua resposta (“Marcar todos” agiliza).",
       },
     ],
   },

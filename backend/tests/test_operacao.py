@@ -383,12 +383,42 @@ def test_ligacoes_pela_natureza_do_produto():
 
     cods = lambda c: [lg.cclasstrib for lg in ligacoes("ncm", c)]  # noqa: E731
     assert cods("30049036") == ["200009", "200032"]  # Naldecon: medicamento humano
-    assert cods("30021590") == ["200053"]  # soros e vacinas
+    # Imunológicos (30.02), contrastes (3006.30) e anticoncepcionais (3006.60) também são medicamentos (ADR 0030).
+    assert cods("30021590") == ["200009", "200032", "200053"]
+    assert cods("30066000") == ["200009", "200032"] and cods("30063013") == ["200009", "200032"]
+    assert cods("30061010") == []  # categutes e suturas: dispositivo, não medicamento
+    # Cada natureza tem a sua chave de fato, igual em todas as teses (ADR 0030).
+    assert {lg.cclasstrib: lg.fato for lg in ligacoes("ncm", "30049036")} == {
+        "200009": "medicamento_aliquota_zero_art146",
+        "200032": "medicamento_registrado_anvisa",
+    }
     assert cods("07099990") == ["200036"]  # hortícola in natura fora do Anexo XV
     assert cods("49019900") == ["410008"]  # livro
     assert cods("85234990") == ["410009"]  # fonograma
     assert cods("34011190") == [] and cods("87089990") == [] and cods("22021000") == []
     assert ligacoes("nbs", "103011000") == []
+
+
+def test_fatos_padronizados_presumem_e_leem_o_cadastro():
+    """ADR 0030: medicamento vendido no varejo se presume registrado e com a CMED cumprida; o ERP que diz
+    "medicamento" responde "não é dispositivo médico"; quem não manipula não vende manipulado."""
+    from app.analise.fatos_padrao import implicitos, para_o_jurista, pergunta
+
+    f = {k: v for k, (v, _, _) in implicitos("Medicamento sob prescrição", {"manipula_medicamentos": "nao"}).items()}
+    assert f["medicamento_registrado_anvisa"] == "sim" and f["fabricante_cumpre_cmed_ou_compromisso"] == "sim"
+    assert f["dispositivo_registrado_anvisa"] == "sim"
+    assert f["comprador_eh_orgao_publico_autarquia_fundacao_ou_entidade_cebas"] == "nao"
+    assert f["dispositivo_medico"] == "nao" and f["produto_produzido_por_farmacia_manipulacao"] == "nao"
+    assert "medicamento_aliquota_zero_art146" not in f  # esta é pergunta de verdade
+    # "Medicamentos e correlatos" pode ser dispositivo; sem resposta do dossiê, a manipulação fica em aberto.
+    g = implicitos("Medicamentos e correlatos", {})
+    assert "dispositivo_medico" not in g and "produto_produzido_por_farmacia_manipulacao" not in g
+    assert implicitos(None, {})["medicamento_registrado_anvisa"][1] == "cadastro"  # presunção vale sempre
+    # O Jurista recebe as chaves, o sentido e o que o sistema resolve.
+    jur = {x["chave"]: x for x in para_o_jurista()}
+    assert jur["medicamento_registrado_anvisa"]["presumido"].startswith("sim")
+    assert "resolvido_pelo_sistema" in jur["dispositivo_medico"]
+    assert pergunta("medicamento_aliquota_zero_art146").startswith("O medicamento é destinado")
 
 
 def test_marca_que_e_o_proprio_produto_fica_na_descricao():

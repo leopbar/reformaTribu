@@ -295,6 +295,7 @@ class ItemResumo(BaseModel):
     codigo_interno: str
     descricao: str
     sugestao: dict[str, str] | None = None
+    resposta: str | None = None  # resposta que vale hoje para o item (perguntas respondidas)
 
 
 class PendenciaOut(BaseModel):
@@ -315,12 +316,53 @@ class PendenciaOut(BaseModel):
     itens: list[ItemResumo]
 
 
+async def _itens_respondidos(session: Any, p: Pendencia) -> list[uuid.UUID]:
+    """Itens que receberam a resposta desta pergunta. A lista da pergunta se esvazia quando os itens não
+    precisam mais dela; o histórico de fatos guarda de qual pergunta cada resposta veio (para corrigir)."""
+    chaves = [
+        c
+        for c in await session.scalars(
+            select(CompanyFact.item_chave).where(CompanyFact.pendencia_id == p.id, CompanyFact.item_chave.is_not(None))
+        )
+        if c
+    ]
+    ids = list(
+        await session.scalars(
+            select(AuditItem.id).where(AuditItem.audit_id == p.audit_id, AuditItem.codigo_interno.in_(set(chaves)))
+        )
+    )
+    for k in p.respostas_itens or {}:
+        try:
+            ids.append(uuid.UUID(str(k)))
+        except ValueError:
+            continue
+    return list(dict.fromkeys(ids))
+
+
 async def _pendencia_out(session: Any, p: Pendencia, limite_itens: int) -> PendenciaOut:
     itens: list[ItemResumo] = []
-    if p.item_ids:
-        rows = await session.scalars(
-            select(AuditItem).where(AuditItem.id.in_(p.item_ids[:limite_itens])).order_by(AuditItem.linha)
+    respondida = p.status == StatusPendencia.RESPONDIDA and p.escopo != EscopoFato.EMPRESA
+    todos = await _itens_respondidos(session, p) if respondida else list(p.item_ids or [])
+    if todos:
+        rows = list(
+            await session.scalars(
+                select(AuditItem).where(AuditItem.id.in_(todos[:limite_itens])).order_by(AuditItem.linha)
+            )
         )
+        atuais: dict[str, str] = {}
+        if rows:
+            atuais = {
+                f.item_chave: f.valor
+                for f in await session.scalars(
+                    select(CompanyFact).where(
+                        CompanyFact.company_id == p.company_id,
+                        CompanyFact.escopo == EscopoFato.ITEM,
+                        CompanyFact.atributo == p.atributo,
+                        CompanyFact.ativo.is_(True),
+                        CompanyFact.item_chave.in_([i.codigo_interno for i in rows]),
+                    )
+                )
+            }
         itens = [
             ItemResumo(
                 id=i.id,
@@ -328,6 +370,7 @@ async def _pendencia_out(session: Any, p: Pendencia, limite_itens: int) -> Pende
                 codigo_interno=i.codigo_interno,
                 descricao=i.descricao,
                 sugestao=((i.estrutura or {}).get("sugestoes_fatos") or {}).get(p.atributo),
+                resposta=atuais.get(i.codigo_interno),
             )
             for i in rows
         ]
@@ -345,7 +388,7 @@ async def _pendencia_out(session: Any, p: Pendencia, limite_itens: int) -> Pende
         resposta=p.resposta,
         respondido_por_email=p.respondido_por_email,
         respondido_em=p.respondido_em,
-        total_itens=len(p.item_ids or []),
+        total_itens=len(todos),
         itens=itens,
     )
 
@@ -378,8 +421,12 @@ async def obter_pendencia(pendencia_id: uuid.UUID, principal: Ver, session: Sess
 
 
 class RespostaIn(BaseModel):
-    valor: str | None = Field(None, max_length=200, description="Resposta para todo o grupo.")
-    respostas_itens: dict[uuid.UUID, str] = Field(default_factory=dict, description="Exceções por item.")
+    valor: str | None = Field(
+        None, max_length=200, description="Resposta para a empresa (dossiê) ou para o único item da pergunta."
+    )
+    respostas_itens: dict[uuid.UUID, str] = Field(
+        default_factory=dict, description="Resposta de cada item (obrigatória quando a pergunta tem vários)."
+    )
     observacao: str | None = Field(None, max_length=1000)
 
 

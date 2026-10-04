@@ -318,6 +318,24 @@ classificado sozinho com resultado diferente do que uma pessoa já tinha decidid
 
 ---
 
+## 5.11. O que mudou em 02/10/2026 (ADR 0030: cada produto com a sua resposta)
+
+- **Secretário:** pergunta sobre a empresa continua com uma resposta só. Pergunta sobre o produto com vários
+  itens agora é respondida item a item, com a lista à vista ("Marcar todos" agiliza). Antes, um clique em
+  "Sim para os 12" gravou "dispositivo médico" em oito remédios.
+- **Correção de respostas:** em "Ver perguntas respondidas", "Corrigir respostas" mostra cada item com a
+  resposta que vale hoje; só os que mudarem são reavaliados, sem IA.
+- **Jurista (instrução v5):** cada benefício que a lei dá pela natureza do produto vem com o nome fixo da
+  pergunta (ex.: "medicamento_aliquota_zero_art146"); antes, cada parecer inventava um nome e o operador
+  respondia a mesma coisa várias vezes. Medicamento também em 30.02 (imunológicos), 3006.30 (contrastes) e
+  3006.60 (anticoncepcionais).
+- **Catálogo de fatos padronizados:** as condições que se repetem têm nome e pergunta fixos, e o sistema
+  responde sozinho o que a lei presume (remédio vendido no varejo é registrado na Anvisa), o que o ERP já diz
+  (remédio não é dispositivo médico) e o que o dossiê diz (quem não manipula não vende manipulado). A
+  sinvastatina, que recebia cinco perguntas, ficou com uma.
+
+---
+
 ## 6. Próximos Passos na Sequência da Conversa
 
 Os componentes que completam o ciclo de vida do sistema e que devem ser abordados no próximo bloco são:

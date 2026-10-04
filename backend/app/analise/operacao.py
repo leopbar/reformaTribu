@@ -344,6 +344,11 @@ def fatos_implicitos(
     return saida
 
 
+def registro_implicito(fato: str, v: str, origem: str, evidencia: str) -> dict[str, Any]:
+    """Fato não gravado, recalculado a cada avaliação, no mesmo formato dos fatos resolvidos."""
+    return _registro(fato, v, origem, evidencia)
+
+
 def _registro(fato: str, v: str, origem: str, evidencia: str) -> dict[str, Any]:
     return {
         "atributo": fato,

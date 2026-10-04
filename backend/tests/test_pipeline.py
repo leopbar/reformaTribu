@@ -876,6 +876,48 @@ def test_resposta_em_grupo_vale_so_para_os_itens_listados(ambiente: dict[str, An
     assert o.status == "aguardando_informacao" and o.perguntas[0]["atributo"] == "adicao_acucar"
 
 
+def test_pergunta_sobre_o_produto_com_varios_itens_e_respondida_item_a_item(ambiente: dict[str, Any]) -> None:
+    """ADR 0030: "Sim para os 12" gravou "dispositivo médico" em oito remédios. Com vários itens, cada um recebe a
+    sua resposta; e uma resposta dada pode ser corrigida, item a item."""
+    from app.analise import pendencias
+    from app.analise.aplicacao import reavaliar
+    from app.audits.processing import processar_itens
+    from app.core.errors import Conflito
+    from app.db.session import TenantContext, sync_tenant_session
+    from app.models import CompanyFact, Pendencia
+
+    org = ambiente["org_id"]
+    aid, (uva, outro) = ambiente["nova_auditoria"](
+        [("SUCO UVA 1L", "20096100"), ("SUCO UVA COM ACUCAR 1L", "20096100")]
+    )
+    processar_itens(aid, org, [uva, outro])
+    autor = pendencias.Autor(uuid.uuid4(), "op@teste.com.br")
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        p = s.scalar(select(Pendencia).where(Pendencia.audit_id == aid, Pendencia.atributo == "adicao_acucar"))
+        assert set(p.item_ids) == {uva, outro}
+        with pytest.raises(Conflito, match="item a item"):
+            pendencias.responder(s, p.id, autor, valor="nao")
+        for i in pendencias.responder(s, p.id, autor, respostas_itens={uva: "nao", outro: "sim"}):
+            reavaliar(s, i, "resposta")
+        pid = p.id
+    assert _item(org, uva).cclasstrib_sugerido == "200034"
+    assert _item(org, outro).cclasstrib_sugerido == "000001"
+
+    # Corrigir a resposta de um item: ela é trocada (o histórico fica) e só ele é reavaliado.
+    with sync_tenant_session(TenantContext.sistema(org)) as s:
+        assert s.get(Pendencia, pid).status == "respondida"
+        with pytest.raises(Conflito):
+            pendencias.responder(s, pid, autor, valor="nao")  # corrigir também é item a item
+        for i in pendencias.responder(s, pid, autor, respostas_itens={outro: "nao"}):
+            reavaliar(s, i, "correção")
+        cod = _item(org, outro).codigo_interno
+        hist = list(
+            s.scalars(select(CompanyFact).where(CompanyFact.item_chave == cod, CompanyFact.atributo == "adicao_acucar"))
+        )
+        assert sorted((f.valor, f.ativo) for f in hist) == [("nao", True), ("sim", False)]
+    assert _item(org, outro).cclasstrib_sugerido == "200034"
+
+
 def test_restaurante_espresso_sem_ncm_sai_pelo_regime_da_operacao(ambiente: dict[str, Any]) -> None:
     """O caso que motivou a ADR 0026: nem a prova nem a árvore acham o NCM, e o cClassTrib sai assim mesmo."""
     from app.audits.processing import processar_itens
@@ -920,6 +962,10 @@ def test_farmacia_naldecon_recebe_os_codigos_de_medicamento_pela_lei(ambiente: d
     pacote = fake.pacotes["30049036"]
     candidatos = {c["codigo"] for c in pacote["cclasstrib_candidatos"]}
     assert {"200009", "200032"} <= candidatos
+    # O pacote diz ao Jurista a chave do fato de cada natureza (a mesma em todas as famílias, ADR 0030).
+    chaves = {c["cclasstrib"]: c.get("fato_da_condicao") for c in pacote["correlacoes_oficiais"]}
+    assert chaves["200009"] == "medicamento_aliquota_zero_art146"
+
     assert any(t["local"] == "Art. 133" for t in pacote["trechos_normativos"])
     i = _item(org, item)
     assert i.descricao_normalizada.upper().startswith("NALDECON")  # a marca é o produto: ficou

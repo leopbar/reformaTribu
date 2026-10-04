@@ -14,6 +14,7 @@ from typing import Any
 
 import orjson
 
+from app.analise import fatos_padrao
 from app.analise.evidencias import CCLASSTRIB_REGRA_GERAL, Evidencias
 from app.analise.fatos import chave
 from app.analise.operacao import regimes_da_empresa
@@ -67,6 +68,8 @@ def conteudo(ev: Evidencias, dossie: dict[str, str], cenario: str) -> dict[str, 
         "empresa": dossie,
         "cenario": {"codigo": cenario, "descricao": CENARIOS.get(cenario, cenario)},
     }
+    # Fatos padronizados (ADR 0030): fora da chave da tese, é instrução sobre como nomear as condições.
+    saida["fatos_padronizados"] = fatos_padrao.para_o_jurista()
     regimes = regimes_da_empresa(dossie).regimes
     if regimes:
         # Fora da chave da tese: é instrução, não material jurídico.

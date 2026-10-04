@@ -2599,6 +2599,8 @@ export interface components {
             sugestao?: {
                 [key: string]: string;
             } | null;
+            /** Resposta */
+            resposta?: string | null;
         };
         /**
          * ItensColunares
@@ -3422,12 +3424,12 @@ export interface components {
         RespostaIn: {
             /**
              * Valor
-             * @description Resposta para todo o grupo.
+             * @description Resposta para a empresa (dossiê) ou para o único item da pergunta.
              */
             valor?: string | null;
             /**
              * Respostas Itens
-             * @description Exceções por item.
+             * @description Resposta de cada item (obrigatória quando a pergunta tem vários).
              */
             respostas_itens?: {
                 [key: string]: string;

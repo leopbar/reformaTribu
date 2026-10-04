@@ -21,7 +21,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from app.analise import decisoes as decisoes_mod
+from app.analise import fatos_padrao
 from app.analise.fatos import DESCONHECIDO, chave, valor
+from app.analise.natureza import condicao_do_fato
 from app.analise.operacao import ORIGEM as ORIGEM_OPERACAO
 from app.analise.operacao import cclasstrib_da_operacao
 from app.core.codes import formatar_codigo
@@ -424,7 +426,14 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
 
     # Regimes da operação primeiro; depois as hipóteses do produto (sem as que só a operação decide).
     so_operacao = _CCLASSTRIB_OPERACAO
-    produto = [h for h in (tese_produto or {}).get("hipoteses", []) if h.get("cclasstrib") not in so_operacao]
+    # cClassTrib de outro cenário (compra pública, exportação, produtor rural…) não vale na venda ao consumidor:
+    # sem isso, a hipótese ficava pendurada e pedia fatos que nunca valem (ex.: "o comprador é órgão público?").
+    outro_cenario = _de_outro_cenario(ent)
+    produto = [
+        h
+        for h in (tese_produto or {}).get("hipoteses", [])
+        if h.get("cclasstrib") not in so_operacao and h.get("cclasstrib") not in outro_cenario
+    ]
     tese: dict[str, Any] = {
         "imposto_seletivo": None,
         "conflitos": [],
@@ -461,7 +470,7 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
             PerguntaNecessaria(
                 atributo=f,
                 escopo=escopo,
-                pergunta=info.get("pergunta") or f"Qual é o valor de “{f.replace('_', ' ')}”?",
+                pergunta=fatos_padrao.pergunta(f) or info.get("pergunta") or _pergunta_padrao(f),
                 opcoes=opcoes,
                 motivo="A resposta muda o enquadramento: "
                 + "; ".join(f"se {o['rotulo'].lower()} → {o['efeito']}" for o in opcoes),
@@ -647,7 +656,7 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
                 PerguntaNecessaria(
                     atributo=f,
                     escopo=info.get("escopo") or "item",
-                    pergunta=info.get("pergunta") or f"Qual é o valor de “{f.replace('_', ' ')}”?",
+                    pergunta=fatos_padrao.pergunta(f) or info.get("pergunta") or _pergunta_padrao(f),
                     opcoes=[
                         {"valor": valor(o), "rotulo": rotulo_opcao(o), "efeito": ""}
                         for o in info.get("opcoes") or ["sim", "nao"]
@@ -693,7 +702,7 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
                     PerguntaNecessaria(
                         atributo=f,
                         escopo=info.get("escopo") or "item",
-                        pergunta=info.get("pergunta") or f"Qual é o valor de “{f.replace('_', ' ')}”?",
+                        pergunta=fatos_padrao.pergunta(f) or info.get("pergunta") or _pergunta_padrao(f),
                         opcoes=[
                             {"valor": valor(o), "rotulo": rotulo_opcao(o), "efeito": ""}
                             for o in info.get("opcoes") or ["sim", "nao"]
@@ -830,10 +839,38 @@ def avaliar(ent: EntradaAvaliacao) -> Avaliacao:
             dims["codigo_fiscal"] = Dimensao("codigo_fiscal", OK, f"{texto}. {nota}"[:300])
 
     # --- a lei nomeia este produto com outro código? -------------------------------------------------
-    if ent.produtos_na_lei and dims["codigo_fiscal"].situacao != FALHA:
+    lei = ent.produtos_na_lei[0] if ent.produtos_na_lei else None
+    codigos_lei = [c.replace(".", "") for c in (lei or {}).get("codigos", [])]
+    if (
+        lei
+        and dims["codigo_fiscal"].situacao != FALHA
+        and av.cclasstrib
+        and av.cclasstrib in (lei.get("cclasstrib_do_anexo") or [])
+        and len(codigos_lei) == 1
+        and (ent.identidade or {}).get("tipo_codigo", "ncm") == "ncm"
+    ):
+        # O item já tem o tratamento que o anexo dá ao produto (ADR 0030): o NCM que a lei cita não muda o
+        # imposto. Vai para "Ajustes de cadastro", como as outras correções de NCM que não mudam o imposto.
+        idt = ent.identidade or {}
+        texto = (
+            f"A lei cita “{lei['produto']}” no código {lei['codigos'][0]} (Anexo {lei['anexo']}, item {lei['item']}); "
+            f"o item já tem o tratamento desse anexo ({av.cclasstrib}). NCM a confirmar no cadastro: sugerido "
+            f"{lei['codigos'][0]}. Não muda o IBS/CBS."
+        )
+        av.ajuste_cadastro = {
+            "tipo_codigo": "ncm",
+            "erp": idt.get("codigo_erp") or idt.get("codigo"),
+            "erp_informado": idt.get("codigo_anterior"),
+            "sugerido": codigos_lei[0],
+            "alternativas": [],
+            "tratamento": f"{av.cclasstrib}|{sit}",
+            "texto": texto,
+        }
+        dims["codigo_fiscal"] = Dimensao("codigo_fiscal", OK, texto[:300])
+    elif lei and dims["codigo_fiscal"].situacao != FALHA:
         idt = ent.identidade or {}
         cod = idt.get("codigo_formatado") or idt.get("codigo")
-        p = ent.produtos_na_lei[0]
+        p = lei
         dims["codigo_fiscal"] = Dimensao(
             "codigo_fiscal",
             ATENCAO,
@@ -1072,6 +1109,15 @@ def _nome_oficial(desc: str) -> str:
         if parte.strip("- ").lower() not in _GENERICOS:
             return parte + (" (outros)" if n else "")
     return partes[-1] if partes else ""
+
+
+def _pergunta_padrao(fato: str) -> str:
+    """Pergunta para um fato que a tese pediu sem formular a pergunta: a condição da lei, quando o fato é de
+    chave fixa (ADR 0030); senão o próprio fato, legível. Antes: "Qual é o valor de “...”?"."""
+    condicao = condicao_do_fato(fato)
+    if condicao:
+        return condicao.split(":")[0].rstrip(". ") + "?"
+    return f"O item atende a esta condição: “{fato.replace('_', ' ')}”?"
 
 
 def _vezes(n: int) -> str:
