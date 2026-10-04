@@ -146,10 +146,20 @@ normativo e Imposto Seletivo. Resultado e nível de revisão:
   refazem a avaliação a partir das respostas da IA gravadas, usando a tese com que cada item foi
   analisado (nunca a de outro dossiê); decisões de pessoas não mudam.
 
-**Perguntas agrupadas** (`pendencias`). Cada pergunta é feita no escopo mais amplo: empresa, categoria do
-ERP ou família (NCM). A resposta vira fato do grupo e **reavalia só os itens afetados, sem IA**
-(`aplicacao.reavaliar`). "Varia por item" permite responder item a item, exceto nas perguntas sobre a
-empresa: essas valem sempre para a empresa toda, mesmo respondidas no detalhe de um item.
+**Perguntas agrupadas** (`pendencias`). Cada pergunta junta os itens no escopo mais amplo: empresa, categoria
+do ERP ou família (NCM). Pergunta sobre a empresa tem uma resposta só (vale para a empresa toda, mesmo
+respondida no detalhe de um item). Pergunta sobre o produto com vários itens é **respondida item a item**
+(ADR 0030): o servidor exige uma resposta por item, e a tela mostra a lista com "Marcar todos". Cada resposta
+vira fato do item e **reavalia só os itens afetados, sem IA** (`aplicacao.reavaliar`). Uma resposta errada se
+corrige em "Ver perguntas respondidas" → "Corrigir respostas": a pergunta lista os itens que a receberam
+(`CompanyFact.pendencia_id`), o fato anterior fica no histórico e só os itens alterados são reavaliados.
+As ligações da lei pela natureza do produto (`natureza.py`) têm chave fixa de fato
+(`correlacoes_oficiais[].fato_da_condicao`), e o **catálogo de fatos padronizados** (`fatos_padrao.py`) dá
+chave, sentido e pergunta fixos às condições que se repetem nas teses, com o valor que a lei presume na venda
+ao consumidor (ex.: medicamento registrado na Anvisa), o que o ERP decide (o que ele diz ser medicamento não é
+dispositivo médico) e o que o dossiê decide. Esses valores entram na avaliação como fatos implícitos, e uma
+resposta de pessoa prevalece. Hipóteses de cClassTrib de outro cenário (compra pública, exportação…) não entram
+na escolha.
 
 **Perfil tributário versionado** (`tax_profiles`). Item × cenário × vigência: CST, cClassTrib, reduções,
 Imposto Seletivo, hipótese, conclusão, dimensões e o registro completo (fatos usados, fundamentos, tese,

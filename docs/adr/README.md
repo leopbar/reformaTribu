@@ -41,6 +41,7 @@ Uma decisão revista não é apagada: a ADR antiga recebe um aviso apontando par
 | [0027](0027-beneficios-pela-natureza-do-produto.md) | Benefícios pela natureza do produto sem lista de NCM (medicamentos, in natura, livros); marca que é o produto fica; tipo do ERP | aceito |
 | [0028](0028-memoria-de-decisoes.md) | Memória de decisões: aprovações de pessoas reforçam (1, 2, 3 = confirma) ou contestam a análise por NCM, cenário e ramo; tela de regras vira resumo | aceito |
 | [0029](0029-menos-revisao-humana.md) | Menos revisão humana: falha da IA pausa e retoma sozinha; IS na origem para quem só revende; "o imposto muda?" decide a revisão (ajustes de cadastro e pergunta "o que é o item?", também na dúvida entre capítulos); NCM do ERP como voto; itens parecidos aprovados; conflito com fato que decide; revisão por grupo; medição sem IA | aceito |
+| [0030](0030-perguntas-sobre-o-produto-item-a-item.md) | Perguntas sobre o produto respondidas item a item, com a lista à vista; respostas corrigíveis; medicamento também em 30.02 e 3006; chave fixa do fato por natureza (Jurista v5) | aceito |
 
 ## Mapa rápido: os agentes e as ADRs
 
@@ -52,7 +53,7 @@ Uma decisão revista não é apagada: a ADR antiga recebe um aviso apontando par
 | Identificador | sim | 0013, 0014, 0019, 0020, 0029 |
 | Segundo parecer | sim, só com alarme | 0013, 0014, 0019, 0029 |
 | Navegador da NCM | sim, só sem código | 0017, 0029 |
-| Jurista (tese da família) | sim, uma vez por família | 0013, 0015, 0018, 0026, 0027, 0029 |
+| Jurista (tese da família) | sim, uma vez por família | 0013, 0015, 0018, 0026, 0027, 0029, 0030 |
 | Leitor de fatos | sim | 0013, 0023, 0026 |
 | Juiz (boletim de 10 notas) | não | 0013, 0018, 0019, 0020, 0026, 0028, 0029 |
-| Secretário (perguntas) | não | 0013, 0021, 0026, 0029 |
+| Secretário (perguntas) | não | 0013, 0021, 0026, 0029, 0030 |

@@ -35,9 +35,18 @@ class Ligacao:
     observacao: str = ""
     norma: str = "LC 214/2025"
     tipo_codigo: str = "ncm"
+    # Chave fixa do fato que a condição pede: todas as teses perguntam a mesma coisa com o mesmo nome, e
+    # uma resposta vale para todas (antes, cada tese inventava a sua: "medicamento_lista_art146",
+    # "consta_lista_aliquota_zero"… e o operador respondia cinco vezes, com respostas diferentes).
+    fato: str = ""
 
 
-_MEDICAMENTOS = ("3003", "3004")
+# Posições do NCM em que há medicamentos registrados na Anvisa. A própria lista de medicamentos da lei
+# (Anexo XIV) usa, além de 30.03 e 30.04, produtos imunológicos e soros (30.02) e meios de contraste
+# (3006.30); os anticoncepcionais hormonais ficam em 3006.60. Fora delas, um remédio saía com tributação
+# integral porque o Jurista nem recebia a hipótese de medicamento (anticoncepcional, 02/10/2026).
+_MEDICAMENTOS = ("3002", "3003", "3004", "300630", "300660")
+
 _IN_NATURA = ("01", "02", "03", "04", "06", "07", "08", "09", "10", "12", "14", "4401", "4403")
 
 LIGACOES: tuple[Ligacao, ...] = (
@@ -51,6 +60,7 @@ LIGACOES: tuple[Ligacao, ...] = (
         "cardiovasculares ou ao Programa Farmácia Popular.",
         observacao="As hipóteses do § 1º, I e II (compra por órgão público ou entidade Cebas) dependem do "
         "comprador: não valem para a venda ao consumidor.",
+        fato="medicamento_aliquota_zero_art146",
     ),
     Ligacao(
         "200032",
@@ -62,6 +72,7 @@ LIGACOES: tuple[Ligacao, ...] = (
         observacao="Para medicamento industrializado ou importado, a redução exige que o fabricante cumpra a "
         "sistemática da CMED ou tenha compromisso com a União e o CGIBS (art. 133, § 2º); presuma a "
         "regularidade do produto vendido em farmácia, salvo indicação em contrário.",
+        fato="medicamento_registrado_anvisa",
     ),
     Ligacao(
         "200053",
@@ -69,6 +80,7 @@ LIGACOES: tuple[Ligacao, ...] = (
         "146",
         "Soros e vacinas registrados na Anvisa (alíquota zero)",
         "O item é soro ou vacina registrado na Anvisa (art. 146, § 1º, III).",
+        fato="soro_ou_vacina_registrado_anvisa",
     ),
     Ligacao(
         "200036",
@@ -80,6 +92,7 @@ LIGACOES: tuple[Ligacao, ...] = (
         "acondicionamento só para transporte, armazenamento ou exposição.",
         observacao="Se o código também estiver num anexo com benefício maior (ex.: cesta básica, Anexo XV), "
         "o anexo prevalece.",
+        fato="produto_in_natura",
     ),
     Ligacao(
         "410008",
@@ -87,6 +100,7 @@ LIGACOES: tuple[Ligacao, ...] = (
         "9",
         "Livros, jornais e periódicos (imunidade)",
         "O item é livro, jornal ou periódico (art. 9º, IV).",
+        fato="livro_jornal_ou_periodico",
     ),
     Ligacao(
         "410008",
@@ -94,6 +108,7 @@ LIGACOES: tuple[Ligacao, ...] = (
         "9",
         "Papel destinado à impressão de livros, jornais e periódicos (imunidade)",
         "O papel é destinado à impressão de livros, jornais ou periódicos (art. 9º, IV).",
+        fato="papel_para_impressao_de_livros",
     ),
     Ligacao(
         "410009",
@@ -103,10 +118,24 @@ LIGACOES: tuple[Ligacao, ...] = (
         "O suporte contém fonograma ou videofonograma musical produzido no Brasil, com obras de autores "
         "brasileiros ou interpretadas por artistas brasileiros (art. 9º, V).",
         excecao="Etapa de replicação industrial de mídias ópticas de leitura a laser.",
+        fato="fonograma_musical_brasileiro",
     ),
 )
+
+
+# Anexos cuja ligação com o cClassTrib a tabela oficial não registra (o código não traz o número do anexo):
+# o Anexo XIV é "Medicamentos submetidos à redução a zero das alíquotas", o tratamento do 200009 (art. 146).
+ANEXOS_SEM_CORRELACAO: dict[int, tuple[str, ...]] = {14: ("200009",)}
 
 
 def ligacoes(tipo_codigo: str, codigo: str) -> list[Ligacao]:
     """Ligações que alcançam este código (pela posição do NCM), na ordem do catálogo."""
     return [lg for lg in LIGACOES if lg.tipo_codigo == tipo_codigo and codigo.startswith(lg.prefixos)]
+
+
+def condicao_do_fato(fato: str) -> str | None:
+    """A condição da lei que um fato de chave fixa verifica (serve de pergunta quando a tese não trouxe uma)."""
+    for lg in LIGACOES:
+        if lg.fato == fato:
+            return lg.condicao
+    return None

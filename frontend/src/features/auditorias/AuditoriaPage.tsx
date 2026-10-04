@@ -169,7 +169,7 @@ function Abas({ auditoria }: { auditoria: Auditoria }) {
             <button className="underline" onClick={() => mudar("perguntas")}>
               Responder agora
             </button>{" "}
-            — cada resposta vale para o grupo inteiro e reclassifica os itens na hora.
+            — perguntas sobre o produto são respondidas item a item, e cada resposta reclassifica os itens na hora.
           </Aviso>
         ) : null}
         <Resultado auditoria={auditoria} />

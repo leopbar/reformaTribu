@@ -15,11 +15,12 @@ from sqlalchemy.orm import Session
 
 from app.analise import decisoes as decisoes_mod
 from app.analise import fatos as fatos_mod
-from app.analise import operacao
+from app.analise import fatos_padrao, operacao
+from app.analise import natureza as natureza_mod
 from app.analise.avaliacao import Avaliacao, EntradaAvaliacao, avaliar
 from app.core.codes import formatar_codigo
 from app.models import Audit, AuditItem, Company, OrgSettings, Pendencia, RefSnapshot, TaxProfile, TaxThesis
-from app.models.enums import EscopoFato, StatusAjusteCadastro, StatusItem, StatusPendencia, StatusRevisao
+from app.models.enums import EscopoFato, OrigemFato, StatusAjusteCadastro, StatusItem, StatusPendencia, StatusRevisao
 
 CAMPOS_PERFIL = ("status", "cclasstrib", "cst", "hipotese", "imposto_seletivo", "codigo")
 
@@ -74,8 +75,20 @@ def entrada(
     mat = operacao.material(
         session, aplic.regimes, (snap.versoes if snap else None) or {}, audit.data_referencia, idt.get("tipo_codigo")
     )
-    # Fatos que a lei presume pelo perfil ou que o código determina; os gravados prevalecem.
-    fatos = {**operacao.fatos_implicitos(aplic.regimes, fatos, idt.get("tipo_codigo"), idt.get("codigo")), **fatos}
+    # Fatos que a lei presume pelo perfil ou que o código determina; os gravados prevalecem. O catálogo de
+    # fatos padronizados também presume e lê o cadastro (ADR 0030): medicamento vendido no varejo é registrado
+    # na Anvisa; o que o ERP diz ser medicamento não é dispositivo médico.
+    presumidos = {
+        f: operacao.registro_implicito(f, v, OrigemFato.ERP if origem == "erp" else OrigemFato.CADASTRO, explicacao)
+        for f, (v, origem, explicacao) in fatos_padrao.implicitos(
+            item.tipo_informado, {k: str(x.get("valor")) for k, x in fatos.items()}
+        ).items()
+    }
+    fatos = {
+        **presumidos,
+        **operacao.fatos_implicitos(aplic.regimes, fatos, idt.get("tipo_codigo"), idt.get("codigo")),
+        **fatos,
+    }
     return EntradaAvaliacao(
         identidade=idt,
         tese=tese.resultado if tese is not None and tese.status == "concluida" else None,
@@ -132,13 +145,31 @@ def _no_anexo_xvii(session: Session, idt: dict[str, Any], versoes: dict[str, Any
 
 def _produtos_na_lei(session: Session, item: AuditItem, audit: Audit) -> list[dict[str, Any]]:
     from app.analise.anexos import produtos_citados_com_outro_codigo
+    from app.reference.importers.lc214 import romano_para_int
 
     idt = item.identidade or {}
     snap = session.get(RefSnapshot, audit.snapshot_id) if audit.snapshot_id else None
-    versao_lei = ((snap.versoes if snap else None) or {}).get("lc214")
-    return produtos_citados_com_outro_codigo(
-        session, versao_lei, item.descricao_normalizada or item.descricao, idt.get("tipo_codigo"), idt.get("codigo")
+    versoes = (snap.versoes if snap else None) or {}
+    citados = produtos_citados_com_outro_codigo(
+        session,
+        versoes.get("lc214"),
+        item.descricao_normalizada or item.descricao,
+        idt.get("tipo_codigo"),
+        idt.get("codigo"),
     )
+    # O tratamento que cada anexo dá ao produto (ADR 0030): se o item já o tem, o NCM da lei não muda o imposto.
+    for p in citados:
+        n = romano_para_int(str(p.get("anexo") or ""))
+        cods = set(natureza_mod.ANEXOS_SEM_CORRELACAO.get(n, ()))
+        if n and versoes.get("cclasstrib"):
+            cods |= set(
+                session.scalars(
+                    text("SELECT codigo FROM cclasstrib_codes WHERE version_id = :v AND nro_anexo = :n"),
+                    {"v": uuid.UUID(str(versoes["cclasstrib"])), "n": n},
+                )
+            )
+        p["cclasstrib_do_anexo"] = sorted(cods)
+    return citados
 
 
 def tratamento_alternativas(

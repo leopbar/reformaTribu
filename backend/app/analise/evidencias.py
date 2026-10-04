@@ -113,7 +113,7 @@ def montar(
         if not _vigente(corr.data_inicio, corr.data_fim, data_referencia):
             continue
         ref = f"C{n}"
-        item = {
+        item: dict[str, Any] = {
             "ref": ref,
             "cclasstrib": corr.cclasstrib,
             "anexo": ROMANOS[corr.nro_anexo - 1] if corr.nro_anexo and 0 < corr.nro_anexo <= len(ROMANOS) else None,
@@ -145,6 +145,7 @@ def montar(
             "condicao": lg.condicao,
             "excecao": lg.excecao or None,
             "observacao": lg.observacao or None,
+            **({"fato_da_condicao": lg.fato} if lg.fato else {}),
         }
         pac_corr.append(item)
         ev.refs[ref] = {"tipo": "correlacao", "id": None, **item}

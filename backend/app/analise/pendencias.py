@@ -35,8 +35,9 @@ def responder(
     respostas_itens: dict[uuid.UUID, str] | None = None,
     observacao: str | None = None,
 ) -> list[uuid.UUID]:
-    """Registra a resposta. `valor` vale para os itens listados na pergunta (ou para a empresa, se a
-    pergunta for do dossiê); `respostas_itens` são exceções por item.
+    """Registra a resposta. `valor` vale para a empresa (pergunta do dossiê) ou para o único item da
+    pergunta; com vários itens, cada um recebe a sua em `respostas_itens` (ADR 0030). Responder de novo uma
+    pergunta já respondida corrige a resposta dos itens informados.
 
     Devolve os itens a reavaliar.
     """
@@ -55,6 +56,18 @@ def responder(
         if len(distintos) > 1:
             raise Conflito("Esta pergunta é sobre a empresa: a resposta é a mesma para todos os itens.")
         valor, respostas_itens = next(iter(distintos)), None
+    if (
+        p.escopo != EscopoFato.EMPRESA
+        and valor is not None
+        and (len(set(p.item_ids or [])) > 1 or p.status != StatusPendencia.ABERTA)
+    ):
+        # Pergunta sobre o produto (ADR 0030): a mesma resposta para vários itens só item a item, com a lista à
+        # vista (a tela permite marcar todos de uma vez). Um clique em "Sim para os 12" gravou "dispositivo
+        # médico do Anexo IV" em oito remédios. Corrigir uma resposta também é item a item.
+        raise Conflito(
+            "Esta pergunta é sobre cada produto: responda item a item (a tela mostra a lista e permite marcar "
+            "todos de uma vez)."
+        )
     validos = {o.get("valor") for o in p.opcoes or []}
     for v in [valor, *(respostas_itens or {}).values()]:
         if v is not None and validos and fatos_mod.valor(v) not in validos and fatos_mod.valor(v) != "desconhecido":
@@ -108,7 +121,8 @@ def responder(
         p.resposta = fatos_mod.valor(valor) if valor is not None else "por item"
         p.respondido_por, p.respondido_por_email = autor.user_id, autor.email
         p.respondido_em = datetime.now(UTC)
-    return list(p.item_ids)
+    # Os itens da pergunta e os que receberam resposta agora (numa correção, a lista da pergunta já se esvaziou).
+    return list(dict.fromkeys([*p.item_ids, *(uuid.UUID(k) for k in itens_resp)]))
 
 
 def identificar_pela_resposta(

@@ -460,6 +460,51 @@ def test_titulo_do_anexo_curto_com_a_reducao() -> None:
     assert _titulo_do_anexo("Dispositivos médicos") == "Dispositivos médicos"
 
 
+def test_hipotese_de_outro_cenario_nao_pede_fatos_na_venda_ao_consumidor() -> None:
+    """Sinvastatina, 03/10: a tese trouxe "dispositivo do Anexo IV comprado por órgão público" (200005); a
+    hipótese ficava pendurada e pedia "o comprador é órgão público?", que nunca vale aqui (ADR 0030)."""
+    publica = {
+        "id": "HP",
+        "titulo": "Compra pela administração pública",
+        "tipo": "beneficio",
+        "cclasstrib": "200005",
+        "condicoes": [{"fato": "comprador_publico", "valor_exigido": "sim", "explicacao": ""}],
+        "excecoes": [],
+        "fundamentos": [{"ref": "T000001", "trecho": "art. 144"}],
+        "explicacao": "",
+    }
+    cct = {**CCT, "200005": {**CCT["200034"], "codigo": "200005", "nome": "Fornecimento à administração pública"}}
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, tese=tese([publica, *SUCO]), cclasstrib=cct))
+    assert av.status == "classificado" and av.cclasstrib == "200034"
+    assert not any(p.atributo == "comprador_publico" for p in av.perguntas)
+
+
+def test_fato_padronizado_tem_sempre_a_mesma_pergunta() -> None:
+    from app.analise.fatos_padrao import pergunta
+
+    h = {
+        **SUCO[0],
+        "condicoes": [{"fato": "medicamento_aliquota_zero_art146", "valor_exigido": "sim", "explicacao": ""}],
+    }
+    t = tese([h, SUCO[1]])
+    t["fatos_necessarios"] = [
+        {"fato": "medicamento_aliquota_zero_art146", "escopo": "item", "pergunta": "Está na lista?"}
+    ]
+    av = avaliar(entrada({}, tese=t))
+    p = next(p for p in av.perguntas if p.atributo == "medicamento_aliquota_zero_art146")
+    assert p.pergunta == pergunta("medicamento_aliquota_zero_art146")
+
+
+def test_pergunta_sem_texto_usa_a_condicao_da_lei() -> None:
+    """A tese pediu um fato sem formular a pergunta: antes saía "Qual é o valor de “...”?" (ADR 0030)."""
+    from app.analise.avaliacao import _pergunta_padrao
+
+    assert _pergunta_padrao("medicamento_aliquota_zero_art146") == (
+        "O medicamento consta da lista oficial de alíquota zero (art. 146, § 3º)?"
+    )
+    assert _pergunta_padrao("codigo_excecionado") == "O item atende a esta condição: “codigo excecionado”?"
+
+
 def test_nome_oficial_pula_os_niveis_outros() -> None:
     from app.analise.avaliacao import _nome_oficial
 
@@ -487,6 +532,22 @@ def test_produto_citado_na_lei_com_outro_codigo_vai_ao_contador() -> None:
     assert "PRODUTO_CITADO_NA_LEI" in av.motivos
     cod = next(d for d in av.dimensoes if d.chave == "codigo_fiscal")
     assert "3808.94.19" in cod.texto
+
+
+def test_produto_citado_na_lei_com_o_mesmo_imposto_vai_para_ajustes_de_cadastro() -> None:
+    """Sinvastatina (ADR 0030): a lei a cita em 3004.90.59 (Anexo XIV), o cadastro tem 3004.90.99, mas o item
+    já tem o tratamento do anexo (alíquota zero). O NCM não muda o imposto: lista "Ajustes de cadastro"."""
+    citado = [
+        {"anexo": "VII", "item": "10", "produto": "suco", "codigos": ["2009.69.00"], "cclasstrib_do_anexo": ["200034"]}
+    ]
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, produtos_na_lei=citado))
+    assert av.status == "classificado" and av.cclasstrib == "200034"
+    assert "PRODUTO_CITADO_NA_LEI" not in av.motivos
+    assert av.ajuste_cadastro["sugerido"] == "20096900"
+    # Com outro tratamento no anexo, o NCM da lei pode mudar o imposto: continua com o contador.
+    outro = [{**citado[0], "cclasstrib_do_anexo": ["200009"]}]
+    av = avaliar(entrada({"adicao_acucar": fato("nao")}, produtos_na_lei=outro))
+    assert av.status == "revisao_contador" and "PRODUTO_CITADO_NA_LEI" in av.motivos
 
 
 def test_ncm_criado_com_imposto_igual_vai_para_ajuste_de_cadastro() -> None:
